@@ -11,6 +11,49 @@
  */
 import { pathToFileURL } from 'node:url'
 
+/** 简易 semver 区间求解（M2 S5：仅支持 ^x.y.z / x.y.z 两种形态；完整区间求解 M3 扩展） */
+function satisfiesRange(version: string, range: string): boolean {
+  if (range === version) return true
+  const m = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(range)
+  if (!m) return false
+  const [M, mnr, P] = version.split('.').map(Number)
+  // npm caret 语义：左起第一个非零位锁定（^1.2.3→>=1.2.3 <2；^0.2.3→>=0.2.3 <0.3；^0.0.3→==0.0.3）
+  if (M !== Number(m[1])) return false
+  if (M > 0) {
+    if (mnr !== Number(m[2])) return mnr > Number(m[2])
+    return P >= Number(m[3])
+  }
+  if (mnr !== Number(m[2])) return false // ^0.x：minor 锁定
+  return P >= Number(m[3])
+}
+
+/**
+ * F10 · peer 版本约束校验（严格模式默认 + 显式豁免，经中间确认⑥）
+ * 冲突 = 加载期硬报错并输出冲突链；豁免需 manifest.peerPolicyOverride（reason 必填→审计留痕）
+ */
+export interface PeerViolation { peer: string; range: string; installed: string | null; optional: boolean }
+
+export function validatePeers(manifest: Manifest, installed: Map<string, string>): { exempted: boolean; violations: PeerViolation[] } {
+  const violations: PeerViolation[] = []
+  for (const p of manifest.peers ?? []) {
+    const v = installed.get(p.peer)
+    if (v === undefined) {
+      if (!p.optional) violations.push({ peer: p.peer, range: p.range, installed: null, optional: false })
+      continue
+    }
+    if (!satisfiesRange(v, p.range)) violations.push({ peer: p.peer, range: p.range, installed: v, optional: !!p.optional })
+  }
+  const hard = violations.filter(v => !v.optional)
+  if (!hard.length) return { exempted: false, violations }
+  if (manifest.peerPolicyOverride?.relaxed) {
+    // 显式豁免：放宽生效，调用方负责将 manifest.peerPolicy='exempt' 写入审计（留痕）
+    return { exempted: true, violations }
+  }
+  // 严格模式默认：冲突链硬报错（文件/依赖路径/区间/实际版本）
+  const chainStr = hard.map(v => `${v.peer}@${v.range} required but ${v.installed ?? '<missing>'} installed`).join('; ')
+  throw new Error(`CAR-E-PEER: peer dependency conflict for "${manifest.name}" — ${chainStr}（放宽需 manifest.peerPolicyOverride 显式声明 + reason，审计留痕）`)
+}
+
 export interface Manifest {
   name: string
   version: string

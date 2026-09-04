@@ -31,17 +31,28 @@ export function verifyContracts(): { ok: true; declared: number } {
 
 type Handler<P, R> = (payload: P, next: () => R) => R
 
-export class EventBus {
-  #handlers = new Map<string, Array<{ fn: Handler<any, any>; label: string }>>()
+export interface HandlerOpts { label?: string; /** 优先级：升序小先（内核约定负值）；同优先级保持注册序（稳定排序，ES2019） */ priority?: number }
 
-  /** 注册处理器：事件未声明 = 启动期静态报错（禁止隐式扩契约） */
-  on<P = unknown, R = unknown>(event: string, fn: Handler<P, R>, label = 'anonymous'): void {
+export class EventBus {
+  #handlers = new Map<string, Array<{ fn: Handler<any, any>; label: string; priority: number; seq: number }>>()
+  #seq = 0
+
+  /** 注册处理器：事件未声明 = 启动期静态报错；label 与 HandlerOpts 双形态向后兼容（M1 兼容） */
+  on<P = unknown, R = unknown>(event: string, fn: Handler<P, R>, labelOrOpts: string | HandlerOpts = 'anonymous'): void {
     if (!catalog.has(event)) {
       throw new Error(`CAR-E-CONTRACT: cannot subscribe to undeclared event "${event}"（@mode 契约缺失，先 declareEvent）`)
     }
+    const opts = typeof labelOrOpts === 'string' ? { label: labelOrOpts } : labelOrOpts
     const list = this.#handlers.get(event) ?? []
-    list.push({ fn: fn as Handler<any, any>, label })
+    list.push({ fn: fn as Handler<any, any>, label: opts.label ?? 'anonymous', priority: opts.priority ?? 0, seq: this.#seq++ })
+    // F11：优先级升序稳定排序（同 priority 保持注册序）
+    list.sort((a, b) => a.priority - b.priority || a.seq - b.seq)
     this.#handlers.set(event, list)
+  }
+
+  /** 治理视图（M2 F14）：返回某事件的处理器链（label+priority，按实际执行序） */
+  handlerChain(event: string): Array<{ label: string; priority: number }> {
+    return (this.#handlers.get(event) ?? []).map(h => ({ label: h.label, priority: h.priority }))
   }
 
   handlerCount(event: string): number {
@@ -52,7 +63,7 @@ export class EventBus {
   async dispatch<P, R = unknown>(event: string, payload: P, init?: () => R): Promise<R | undefined> {
     const mode = catalog.get(event)
     if (!mode) throw new Error(`CAR-E-CONTRACT: dispatch of undeclared event "${event}"`)
-    const handlers = [...(this.#handlers.get(event) ?? [])]
+    const handlers = [...(this.#handlers.get(event) ?? [])] // 已按 priority 稳定排序
     const fallback = init ?? (() => undefined as R)
     switch (mode) {
       case 'emit': // 广播：不等待、无返回值（同步通知语义）

@@ -48,9 +48,13 @@ node --experimental-transform-types --test test/*.spec.ts
 | `src/cli.ts` | N2 CLI：car run（五环节快速上手流）/ session verify / session replay / car doctor | US-1/US-4/§6.5 |
 | `test/s4.spec.ts` | E2E 五环节全链路 + N2 实测 + Q-06 定标 | 业务闭环端到端 |
 
+| `test/s5.spec.ts` | M2-S5：F10 peer 约束（严格默认/豁免/optional/caret 语义）+ F11 优先级（升序/稳定排序/向后兼容/治理视图） | 冻结决策⑥、F10/F11 AC |
+| `adr/ADR-003.md` | 签名双轨定稿（D-1/D-2 裁决实装文档，S6 验签器依据） | 决议⑦ |
+
 ## 状态
 
-- S1：F1/F9/F2/N1 ✅（14）｜ S2：F7/F5/F6 ✅（+17）｜ S3：F3/F4/F8 ✅（+14）｜ S4：E2E+N2+Q-06 ✅（+3，累计 48/48）
+- S1-S4：48/48 ✅ ｜ **M2-S5：F10/F11/ADR-003 ✅（+11，累计 59/59）**
+- M2 待办：S6 验签器实装（ADR-003）+ F13 五层停止（M2系统设计增补 T-1）；S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出；S10 收口。
 - **N2 实测**：首插件跑通 3ms（目标 ≤300s，余量 10 万倍）
 - **Q-06 定标回填**：装配 20 插件 <1ms；serial 分发 1000 次 6ms；日志 1 万事件追加+哈希链 125ms、回放+校验 21ms
 - 待办：jiti 实装补测首载时延（载体替身已验证不变量）；POC-4 Linux/WSL2 实跑；发布工程预演（dist-tag beta）
