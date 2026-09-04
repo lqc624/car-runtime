@@ -51,9 +51,14 @@ node --experimental-transform-types --test test/*.spec.ts
 | `test/s5.spec.ts` | M2-S5：F10 peer 约束（严格默认/豁免/optional/caret 语义）+ F11 优先级（升序/稳定排序/向后兼容/治理视图） | 冻结决策⑥、F10/F11 AC |
 | `adr/ADR-003.md` | 签名双轨定稿（D-1/D-2 裁决实装文档，S6 验签器依据） | 决议⑦ |
 
+| `src/load/verifier.ts` | S6 验签器：minisign 离线轨（ed25519）+ Sigstore 接口预留/回退 + fail-closed 分级（校验失败硬拒绝不可配置 / 缺失 warn→enforce） | ADR-003、D-1/D-2 |
+| `src/loop/goal.ts` + `src/loop/recover.ts` | F13 Goal 层（phase 持久化 goalUpdate / activation 纯内存默认 disarmed / 自动 disarm）+ 恢复层（interrupted 补记 + 未配对 toolCall 合成结果） | M2系统设计增补 T-1 |
+| `test/s6.spec.ts` | 12 项断言（验签四情形、Goal 重放/幂等恢复、aggregate any/all、blockOnDeny） | D-1/D-2 裁决、US-5 |
+
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ **M2-S5：F10/F11/ADR-003 ✅（+11，累计 59/59）**
+- S1-S4：48/48 ✅ ｜ M2-S5：59/59 ✅ ｜ **M2-S6：F13+验签器 ✅（+12，累计 71/71）**
+- M2 待办：S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出+等保核验；S10 收口。
 - M2 待办：S6 验签器实装（ADR-003）+ F13 五层停止（M2系统设计增补 T-1）；S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出；S10 收口。
 - **N2 实测**：首插件跑通 3ms（目标 ≤300s，余量 10 万倍）
 - **Q-06 定标回填**：装配 20 插件 <1ms；serial 分发 1000 次 6ms；日志 1 万事件追加+哈希链 125ms、回放+校验 21ms

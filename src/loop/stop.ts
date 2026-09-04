@@ -42,6 +42,10 @@ export interface TurnPreset {
   /** 确认模式审批回调：返回 true 放行 */
   authorize?: (call: ToolCall) => Promise<boolean>
   maxSteps?: number
+  /** F13：OR/AND 收口可配置（默认 any/all = M1 行为等价） */
+  aggregate?: { concludesTurn?: 'any' | 'all'; terminate?: 'any' | 'all' }
+  /** F13：授权拒绝即收口 blocked（默认 false = 模型继续调整） */
+  blockOnDeny?: boolean
 }
 
 export interface TurnResult { reason: TurnEndReason; steps: number; endReasonTrail: Array<{ seq: number; reason: TurnEndReason }> }
@@ -64,10 +68,12 @@ export async function runTurn(opts: {
   let sawMaxTokens = false
   let steps = 0
 
-  const executeBatch = async (calls: ToolCall[]): Promise<{ concludesTurn: boolean; terminateAll: boolean; allFinalized: boolean }> => {
+  const executeBatch = async (calls: ToolCall[]): Promise<{ concludesTurn: boolean; concludesAll: boolean; terminateVotes: number; terminateAll: boolean; finalized: number; denies: number }> => {
     let concludesTurn = false
+    let concludesVotes = 0
     let terminateVotes = 0
     let finalized = 0
+    let denies = 0
     for (const call of calls) {
       if (signal?.aborted) {
         // 取消：未派发调用补记成对事件（日志无缺口）
@@ -85,15 +91,19 @@ export async function runTurn(opts: {
       if (def.declaredSideEffect === 'write' && preset.mode !== 'full') {
         const granted = preset.mode === 'confirm' ? await (preset.authorize?.(call) ?? Promise.resolve(false)) : false
         log.append('runtime', 'toolResult', turnId, { id: call.id, error: 'authorization-denied', granted, mode: preset.mode })
-        if (!granted) continue
+        if (!granted) { denies++; continue }
       }
       const result = await def.run(call.args)
       log.append('plugin', 'toolResult', turnId, { id: call.id, result })
       finalized++
-      if (def.concludesTurn) concludesTurn = true   // OR 收口
+      if (def.concludesTurn) { concludesTurn = true; concludesVotes++ }
       if (def.terminate) terminateVotes++
     }
-    return { concludesTurn, terminateAll: finalized > 0 && terminateVotes === finalized, allFinalized: finalized > 0 }
+    return {
+      concludesTurn, concludesAll: finalized > 0 && concludesVotes === finalized,
+      terminateVotes, terminateAll: finalized > 0 && terminateVotes === finalized,
+      finalized, denies,
+    }
   }
 
   try {
@@ -135,12 +145,21 @@ export async function runTurn(opts: {
 
       if (step.stopReason === 'toolUse' && step.toolCalls?.length) {
         const batch = await executeBatch(step.toolCalls)
-        if (batch.terminateAll) { // AND：整批全部 finalized 且全部 terminate
+        // F13：授权拒绝即收口（blockOnDeny 产出点——blocked 仅新增产出点，枚举不增）
+        if (preset.blockOnDeny && batch.denies > 0) {
+          const seq = log.append('runtime', 'turnEnd', turnId, null, { reason: 'blocked', denies: batch.denies }).seq
+          trail.push({ seq, reason: 'blocked' })
+          return { reason: 'blocked', steps, endReasonTrail: trail }
+        }
+        const agg = preset.aggregate ?? {}
+        const abortedNow = (agg.terminate ?? 'all') === 'any' ? batch.terminateVotes > 0 : batch.terminateAll
+        if (abortedNow) { // terminate 收口：默认 AND（整批），可配置 any
           const seq = log.append('runtime', 'turnEnd', turnId, null, { reason: 'aborted' }).seq
           trail.push({ seq, reason: 'aborted' })
           return { reason: 'aborted', steps, endReasonTrail: trail }
         }
-        if (batch.concludesTurn) { // OR：任一工具发现全局收口条件
+        const concludedNow = (agg.concludesTurn ?? 'any') === 'any' ? batch.concludesTurn : batch.concludesAll && batch.finalized > 0
+        if (concludedNow) { // concludesTurn 收口：默认 OR，可配置 all
           const reason: TurnEndReason = sawMaxTokens ? 'max-tokens' : 'completed'
           const seq = log.append('runtime', 'turnEnd', turnId, null, { reason }).seq
           trail.push({ seq, reason })
