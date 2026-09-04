@@ -1,7 +1,7 @@
 {
   "bomFormat": "CAR-SBOM",
   "specVersion": "0.1",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "components": [
     {
       "type": "file",
@@ -15,23 +15,43 @@
     },
     {
       "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/governance/dump.ts",
+      "sha256": "7cfbf8eda03d5fd10ab80f7a06e62c6722a584ecc94a833112922bb9b095d2f1"
+    },
+    {
+      "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/kernel/context.ts",
-      "sha256": "e017caf603e3a4e5201ba6139257c1ff3bd139d87e5dd918662e70bb8e8217cc"
+      "sha256": "b69dfb6698791632458c1585f2d85ef7daa570c3f17be2e304bfba6622bbd995"
     },
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/kernel/events.ts",
-      "sha256": "313bc259ab3eeffe30c955fdcc8d248dc28cd7a932ede587c0122a43fe739b17"
+      "sha256": "eff9fc018c5f87ff6f090df35702c0ac9b5821150c8d0640245aad3ca7527a13"
     },
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/load/loader.ts",
-      "sha256": "49adb5f88124fe929891358c94fe5601d0d25f22138277911950066580b04c38"
+      "sha256": "669d028f62d37e5e34afaa7fee920cdd835a119676771782e259641a1d0249b9"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/load/verifier.ts",
+      "sha256": "306e806e555352337084e55c04d2d8431811fb01a98ad825b2b5f84e85d4f610"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/loop/goal.ts",
+      "sha256": "69cd3f41cac19435b514426962ea81f4f5518c5d34c39fea21b94d7f46e653c6"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/loop/recover.ts",
+      "sha256": "095d68827ae129f80f84cf485d7d2c41549dec99574311b8fe0f65fae9498ec5"
     },
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/loop/stop.ts",
-      "sha256": "7533582ebb122fb19b12d56b06bba894423b966291ea089b4aac2d07140f97a1"
+      "sha256": "f1bf6bd09701e6d53b86f352bc4da1728d544cf60ffda78eac74922383d46121"
     },
     {
       "type": "file",
@@ -41,22 +61,32 @@
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/sandbox/sandbox.ts",
-      "sha256": "b9493de54449f2682e0917864a13544514c078ccd84f006a341482d4437a679e"
+      "sha256": "2ef4e259fb00284df36c21ef171e0680e72d6e3daa524b2697d4f38c3edc0215"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/security/secrets.ts",
+      "sha256": "21a3c6872a4dde925e264278616293b5b277ed093edb7d3a3babb80c5760aa34"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/session/export.ts",
+      "sha256": "5cc140ff46f96ab34422b17d7bfb1aabb9dd08852ad9d56ffe09ad707c758429"
     },
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/session/log.ts",
-      "sha256": "674214f9927e0e063c733cf03ddc2da43bcc3560b800c17ddfbe3171a13ae1b9"
+      "sha256": "fdb305ec9595f905cb0ab078f6e337cab1475319fb9a9281844c13e9b56fa971"
     },
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/package.json",
-      "sha256": "896071352428ef76856fe36134c42cf1db4e32825c46650bcbbf85057048128c"
+      "sha256": "8dd8cdfd450a85dfef05f3beba6643460720fc81cb833add508f8dc9769ba182"
     },
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/README.md",
-      "sha256": "9cd85bcf827f194cc87866521e1c7757fed1ebb1fe8d31cbacee2e7178d39c27"
+      "sha256": "70b3e1a33fc75dcfb1a94d2ee55e35ec8b2a659947ac9d3a9eb10127ebbcfe7d"
     }
   ],
   "runtimeDependencies": []

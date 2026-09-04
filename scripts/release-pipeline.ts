@@ -48,13 +48,19 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
   record(stage, 'G-01 单测全绿', fail === '0', `${pass} pass / ${fail} fail`)
   record(stage, 'G-02 N1 日志不变量断言', out.includes('48/48') || fail === '0', 'assertModelVisibleLogged 内嵌于测试套件')
   // 密钥扫描（gitleaks 等价简化规则集：真实 CI 用 gitleaks 全量规则）
+  // 豁免清单：secrets 检测规则定义与标定基准集（文件本身即凭据模式库，命中属预期）；
+  // 豁免须显式列文件路径（非目录级通配），豁免清单变更需评审（M2-S10 口径）
   const secretPatterns = [/sk-[A-Za-z0-9]{16,}/, /ghp_[A-Za-z0-9]{20,}/, /BEGIN (RSA |EC )?PRIVATE KEY/, /AKIA[A-Z0-9]{12,}/]
+  const scanExempt = (f: string) => f.replaceAll('\\', '/').endsWith('src/security/secrets.ts') || f.replaceAll('\\', '/').endsWith('test/s7.spec.ts')
   let hits = 0
+  let scanned = 0
   for (const f of [...walk(join(ROOT, 'src'), '.ts'), ...walk(join(ROOT, 'test'), '.ts')]) {
+    if (scanExempt(f)) continue
+    scanned++
     const content = readFileSync(f, 'utf-8')
     for (const p of secretPatterns) if (p.test(content)) hits++
   }
-  record(stage, 'G-03 硬编码密钥扫描 = 0', hits === 0, `${hits} hits（扫描 src+test 全部 .ts）`)
+  record(stage, 'G-03 硬编码密钥扫描 = 0', hits === 0, `${hits} hits（扫描 ${scanned} 个 .ts，豁免：secrets.ts 规则库 + s7 标定基准，豁免清单见脚本注记）`)
   // 依赖审计：零运行时依赖 → 无漏洞面（pnpm audit 在引入依赖后启用）
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'))
   record(stage, 'G-04 依赖审计', Object.keys(pkg.dependencies ?? {}).length === 0, '零运行时依赖（node:sqlite/node:crypto 内置），pnpm audit 在引入首依赖后启用')
