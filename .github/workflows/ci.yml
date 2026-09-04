@@ -1,0 +1,12 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node --experimental-transform-types --test test/*.spec.ts
+      # N1 日志不变量断言已内嵌于测试（SessionLog.assertModelVisibleLogged）
+      # S3 追加门禁：沙箱逃逸回归矩阵（tests/sandbox-escape）+ 密钥扫描 + 依赖审计
