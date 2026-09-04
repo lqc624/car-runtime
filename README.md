@@ -67,9 +67,13 @@ node --experimental-transform-types --test test/*.spec.ts
 | `adr/mlps-audit-checklist.md` | 等保 8.1.4.3 a–d 逐条核验（三独立来源交叉证实）：a/b 满足、c/d 部分满足差距显式标注（MLPS-G1/G2/G3 处置） | D-4 |
 | `test/s9.spec.ts` | 5 项断言（配置树/产消图/取证包/篡改拒绝/三标分层） | F14/F15/D-4 |
 
+| `src/host/mappings.ts` | S11 T-1 归一化 schema（host-mappings-v1）：session id 确定性派生（SH-+sha256）+ 两宿主纯数据 profile + hostRaw 零静默降级通道 | 决议⑤、T-1 |
+| `src/host/hostGateway.ts` | S11 HostGateway 骨架：9 tool 会话级能力面（step 循环不暴露）+ hostId 登记制（A050001）+ RuntimeFacade 分发（snake→camel）+ 审计全留痕 | M3系统设计增补 T-1 |
+| `test/s11.spec.ts` | 10 项断言（幂等派生/跨宿主隔离/归一化等价/降级留痕/登记制/9 tool 面/契约测试 v0/宿主标识静态断言） | 双宿主等价基线 |
+
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ M2：S5 → S6 → S7 → S9 全过 **89/89** ｜ **S10 收口终验 ✅（发布预演 9 PASS / 4 DRY-RUN / 0 FAIL，版本 0.2.0）**
+- S1-S4：48/48 ✅ ｜ M2：S5-S10 全过 **89/89**（v0.2.0，发布预演 9 PASS / 4 DRY-RUN）｜ **M3-S11：多宿主骨架 +10 → 99/99 ✅**
 - 环境动作清单（E-1~E-5）与遗留移交（T-8 等）见 delivery/M2收口终验报告.md；G-03 豁免机制：secrets 规则库/标定基准显式列文件豁免，清单变更需评审。
 - M2 待办：S6 验签器实装（ADR-003）+ F13 五层停止（M2系统设计增补 T-1）；S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出；S10 收口。
 - **N2 实测**：首插件跑通 3ms（目标 ≤300s，余量 10 万倍）

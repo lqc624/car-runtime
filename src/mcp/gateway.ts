@@ -12,11 +12,29 @@
 export interface JsonRpcRequest { jsonrpc: '2.0'; id: number; method: string; params?: unknown }
 export interface JsonRpcResponse { jsonrpc: '2.0'; id: number; result?: unknown; error?: { code: number; message: string } }
 
-export interface McpTransport {
+/**
+ * 客户端传输（CAR → MCP Server 方向）。M3-S11 双向分层：本接口为 client 侧对偶；
+ * server 侧（宿主 → CAR）见 src/host/hostGateway.ts 的 ServerTransport。
+ */
+export interface ClientTransport {
   send(req: JsonRpcRequest): Promise<JsonRpcResponse>
   /** 进程/通道存活状态 */
   alive(): boolean
   /** 主动终止 */
+  close(): void
+}
+
+/** M1 兼容别名（M2 代码零改动；M4 评估移除） */
+export type McpTransport = ClientTransport
+
+/**
+ * 服务端传输对偶（宿主 → CAR 方向，M3 多宿主）：宿主作为 MCP client 调用 CAR 暴露的 tool 面。
+ * 与 ClientTransport 语义对偶：CAR 不主动 send，仅响应 method 调用。
+ */
+export interface ServerTransport {
+  /** 宿主到达的 JSON-RPC 方法调用（由 HostGateway 分发到 9 tool 注册表） */
+  onRequest(method: string, params: unknown): Promise<JsonRpcResponse>
+  alive(): boolean
   close(): void
 }
 
@@ -31,7 +49,7 @@ export function containsPlaintextCredential(env: Record<string, string>): string
 
 export interface McpServerConfig {
   serverId: string
-  transport: McpTransport
+  transport: ClientTransport
   /** 启动环境变量（禁明文凭据，凭据经 M8 凭据门运行时注入） */
   env?: Record<string, string>
 }
