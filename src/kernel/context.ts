@@ -148,9 +148,24 @@ export class Context {
     return report
   }
 
+  /** 治理视图（F14）：装配配置树快照（插件/依赖/服务/副作用计数/状态）——只读，不改运行时 */
+  governanceSnapshot() {
+    return {
+      plugins: [...this.fibers.values()].map(f => ({
+        name: f.name,
+        inject: [...f.inject],
+        state: f.state,
+        effects: f.disposables.length,
+        effectLabels: f.disposables.map(d => d.label),
+        provides: [...this.services.entries()].filter(([, s]) => s.provider === f.name).map(([n]) => n),
+      })),
+      services: [...this.services.entries()].map(([name, s]) => ({ name, provider: s.provider })),
+      pending: [...this.pending],
+    }
+  }
+
   /** 依赖图拓扑分层（Kahn 分层；环 = 加载期显式报错） */
-  private topoOrder(): { layers: string[][]; all: string[] } {
-    const active = [...this.fibers.values()].filter(f => f.state === 'ACTIVE')
+  private topoOrder(): { layers: string[][]; all: string[] } {    const active = [...this.fibers.values()].filter(f => f.state === 'ACTIVE')
     // provider 关系：插件 P provide 了服务 s，Q inject s => Q 依赖 P（Q 先卸载）
     const depsOf = new Map<string, Set<string>>() // name -> 依赖的 provider 集合
     for (const f of active) depsOf.set(f.name, new Set())

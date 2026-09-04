@@ -62,8 +62,15 @@ node --experimental-transform-types --test test/*.spec.ts
 
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ M2-S5：59/59 ✅ ｜ M2-S6：71/71 ✅ ｜ **M2-S7：F12+Seatbelt+win32 spike 方案 ✅（+13，累计 84/84）**
-- M2 待办：S8 Windows koffi spike 实跑（判据 1-4）+ 逃逸矩阵三平台扩容；S9 治理+导出+等保核验；S10 收口。
+| `src/governance/dump.ts` | S9 F14 治理视图：配置树 dump（Context.governanceSnapshot）+ 事件产消图（目录 × handlerChain 按 priority 执行序） | P1-7 |
+| `src/session/export.ts` | S9 F15 合规导出增强：取证包（逐文件 SHA-256 + 链锚点 + 审计元数据，断链中止）+ verifyBundle + 三标分层声明（9 核心字段三标全覆盖 + 标准特有扩展） | Q-09、决议⑧、T-7 |
+| `adr/mlps-audit-checklist.md` | 等保 8.1.4.3 a–d 逐条核验（三独立来源交叉证实）：a/b 满足、c/d 部分满足差距显式标注（MLPS-G1/G2/G3 处置） | D-4 |
+| `test/s9.spec.ts` | 5 项断言（配置树/产消图/取证包/篡改拒绝/三标分层） | F14/F15/D-4 |
+
+## 状态
+
+- S1-S4：48/48 ✅ ｜ M2：S5 59/59 ✅ → S6 71/71 ✅ → S7 84/84 ✅ → **S9 89/89 ✅（+5）**
+- M2 待办：S8 Windows koffi spike 实跑（环境依赖，方案已冻结）→ S10 收口终验（发布预演全 PASS + 北极星口径确认）。
 - M2 待办：S6 验签器实装（ADR-003）+ F13 五层停止（M2系统设计增补 T-1）；S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出；S10 收口。
 - **N2 实测**：首插件跑通 3ms（目标 ≤300s，余量 10 万倍）
 - **Q-06 定标回填**：装配 20 插件 <1ms；serial 分发 1000 次 6ms；日志 1 万事件追加+哈希链 125ms、回放+校验 21ms
