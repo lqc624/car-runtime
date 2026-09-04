@@ -55,10 +55,15 @@ node --experimental-transform-types --test test/*.spec.ts
 | `src/loop/goal.ts` + `src/loop/recover.ts` | F13 Goal 层（phase 持久化 goalUpdate / activation 纯内存默认 disarmed / 自动 disarm）+ 恢复层（interrupted 补记 + 未配对 toolCall 合成结果） | M2系统设计增补 T-1 |
 | `test/s6.spec.ts` | 12 项断言（验签四情形、Goal 重放/幂等恢复、aggregate any/all、blockOnDeny） | D-1/D-2 裁决、US-5 |
 
+| `src/security/secrets.ts` | S7 F12 secrets 检测：6 类模式库 + 三层检测（前缀→熵≥3.5→上下文加成/降级）+ redact 全遮蔽；D-3 标定口径内建（正负 1:9 粗标 FPR 0%/召回 ≥85%） | T-6、D-3 |
+| `src/sandbox/sandbox.ts` +2 | S7 Seatbelt profile 生成器（deny default/network*/.git 受保护路径/引号转义）+ darwin 后端接入 | SR-19、dsh darwin 路由 |
+| `adr/win32-spike.md` + `scripts/win32-koffi-spike.ts` | S8 Windows spike 方案冻结（三阶段+四判据+逐级回退 a/b/c） | T-3、规划三重闸门① |
+| `test/s7.spec.ts` | 13 项断言（检测/脱敏/误报防护/标定粗标/profile 结构/SPIKE SKIP 口径） | F12 AC |
+
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ M2-S5：59/59 ✅ ｜ **M2-S6：F13+验签器 ✅（+12，累计 71/71）**
-- M2 待办：S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出+等保核验；S10 收口。
+- S1-S4：48/48 ✅ ｜ M2-S5：59/59 ✅ ｜ M2-S6：71/71 ✅ ｜ **M2-S7：F12+Seatbelt+win32 spike 方案 ✅（+13，累计 84/84）**
+- M2 待办：S8 Windows koffi spike 实跑（判据 1-4）+ 逃逸矩阵三平台扩容；S9 治理+导出+等保核验；S10 收口。
 - M2 待办：S6 验签器实装（ADR-003）+ F13 五层停止（M2系统设计增补 T-1）；S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出；S10 收口。
 - **N2 实测**：首插件跑通 3ms（目标 ≤300s，余量 10 万倍）
 - **Q-06 定标回填**：装配 20 插件 <1ms；serial 分发 1000 次 6ms；日志 1 万事件追加+哈希链 125ms、回放+校验 21ms
