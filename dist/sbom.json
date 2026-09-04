@@ -1,0 +1,63 @@
+{
+  "bomFormat": "CAR-SBOM",
+  "specVersion": "0.1",
+  "version": "0.1.0",
+  "components": [
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/authz/authz.ts",
+      "sha256": "3988f18886c1f0e77f3f1536cea93445189a9fd112fd42ecd8ba90525ba908c0"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/cli.ts",
+      "sha256": "02b9780e85d4f63d7e28ad3834684db0dda2fff22cd35b9dd488266819aed8aa"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/kernel/context.ts",
+      "sha256": "e017caf603e3a4e5201ba6139257c1ff3bd139d87e5dd918662e70bb8e8217cc"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/kernel/events.ts",
+      "sha256": "313bc259ab3eeffe30c955fdcc8d248dc28cd7a932ede587c0122a43fe739b17"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/load/loader.ts",
+      "sha256": "49adb5f88124fe929891358c94fe5601d0d25f22138277911950066580b04c38"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/loop/stop.ts",
+      "sha256": "7533582ebb122fb19b12d56b06bba894423b966291ea089b4aac2d07140f97a1"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/mcp/gateway.ts",
+      "sha256": "f1702987886a8a1e98958d9a49c4f48908ca8a566aa0d8c2fa2e263814caab26"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/sandbox/sandbox.ts",
+      "sha256": "b9493de54449f2682e0917864a13544514c078ccd84f006a341482d4437a679e"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/session/log.ts",
+      "sha256": "674214f9927e0e063c733cf03ddc2da43bcc3560b800c17ddfbe3171a13ae1b9"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/package.json",
+      "sha256": "896071352428ef76856fe36134c42cf1db4e32825c46650bcbbf85057048128c"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/README.md",
+      "sha256": "9cd85bcf827f194cc87866521e1c7757fed1ebb1fe8d31cbacee2e7178d39c27"
+    }
+  ],
+  "runtimeDependencies": []
+}
