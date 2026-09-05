@@ -10,5 +10,11 @@
   "scripts": {
     "test": "node --experimental-transform-types --test test/",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "koffi": "^3.2.1"
+  },
+  "optionalDependencies": {
+    "koffi": "^3.2.1"
   }
 }
