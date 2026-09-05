@@ -1,13 +1,13 @@
-{"stage":"S1-PR 门禁","gate":"G-01 单测全绿","verdict":"PASS","ts":1788534296437,"detail":"89 pass / 0 fail"}
-{"stage":"S1-PR 门禁","gate":"G-02 N1 日志不变量断言","verdict":"PASS","ts":1788534296437,"detail":"assertModelVisibleLogged 内嵌于测试套件"}
-{"stage":"S1-PR 门禁","gate":"G-03 硬编码密钥扫描 = 0","verdict":"PASS","ts":1788534296447,"detail":"0 hits（扫描 21 个 .ts，豁免：secrets.ts 规则库 + s7 标定基准，豁免清单见脚本注记）"}
-{"stage":"S1-PR 门禁","gate":"G-04 依赖审计","verdict":"PASS","ts":1788534296447,"detail":"零运行时依赖（node:sqlite/node:crypto 内置），pnpm audit 在引入首依赖后启用"}
-{"stage":"S2-构建与制品","gate":"G-05 SBOM 生成","verdict":"PASS","ts":1788534296470,"detail":"17 个组件（运行时依赖 0 项）"}
-{"stage":"S2-构建与制品","gate":"G-06 版本一致性","verdict":"PASS","ts":1788534296470,"detail":"version=0.2.0（精确 semver，npm 不可变语义：禁止覆盖已发布版本）"}
-{"stage":"S3-沙箱逃逸回归","gate":"G-07 逃逸矩阵定义校验","verdict":"DRY-RUN","ts":1788534296471,"detail":"20 条用例 × 5 类（v0 冻结）；Windows 开发态 SKIPPED——正式发布需 Linux/WSL2 全 PASS（AL-04 P1：任一逃逸阻塞）"}
-{"stage":"S4-签名与归档","gate":"G-08 cosign keyless 签名","verdict":"DRY-RUN","ts":1788534296471,"detail":"需 GitHub OIDC + Sigstore（远端）"}
-{"stage":"S4-签名与归档","gate":"G-09 npm provenance（OIDC 可信发布）","verdict":"DRY-RUN","ts":1788534296471,"detail":"需 npm publish 通道（远端）"}
-{"stage":"S4-签名与归档","gate":"G-10 GitHub Releases 归档（napi 二进制+SBOM+校验和）","verdict":"DRY-RUN","ts":1788534296471,"detail":"需远端仓库（远端）"}
-{"stage":"S6-制品封装","gate":"G-11 制品校验和（SHA-256）","verdict":"PASS","ts":1788534296863,"detail":"car-runtime-0.2.0.tgz (96037 bytes) → SHA256SUMS"}
-{"stage":"S7-dist-tag 晋级模拟","gate":"G-12 渠道晋级：beta → rc → latest","verdict":"PASS","ts":1788534296865,"detail":"{\"beta\":\"0.2.0\",\"rc\":null,\"latest\":\"0.1.0\",\"immutable\":[]}"}
-{"stage":"S7-dist-tag 晋级模拟","gate":"G-13 回滚演练：latest 回指 + 前滚补丁","verdict":"PASS","ts":1788534296865,"detail":"npm 版本不可变（禁止覆盖已发布版本）；回滚=dist-tag 回指，破坏性变更走 major+reader 兼容（SessionEventMap 只增不删）"}
+{"stage":"S1-PR 门禁","gate":"G-01 单测全绿","verdict":"PASS","ts":1788579212377,"detail":"127 pass / 0 fail"}
+{"stage":"S1-PR 门禁","gate":"G-02 N1 日志不变量断言","verdict":"PASS","ts":1788579212377,"detail":"assertModelVisibleLogged 内嵌于测试套件"}
+{"stage":"S1-PR 门禁","gate":"G-03 硬编码密钥扫描 = 0","verdict":"PASS","ts":1788579212393,"detail":"0 hits（扫描 36 个 .ts，豁免：secrets.ts 规则库 + s7 标定基准，豁免清单见脚本注记）"}
+{"stage":"S1-PR 门禁","gate":"G-04 依赖审计","verdict":"PASS","ts":1788579212393,"detail":"零运行时依赖（node:sqlite/node:crypto 内置），pnpm audit 在引入首依赖后启用"}
+{"stage":"S2-构建与制品","gate":"G-05 SBOM 生成","verdict":"PASS","ts":1788579212428,"detail":"27 个组件（运行时依赖 0 项）"}
+{"stage":"S2-构建与制品","gate":"G-06 版本一致性","verdict":"PASS","ts":1788579212428,"detail":"version=0.3.0（精确 semver，npm 不可变语义：禁止覆盖已发布版本）"}
+{"stage":"S3-沙箱逃逸回归","gate":"G-07 逃逸矩阵定义校验","verdict":"DRY-RUN","ts":1788579212428,"detail":"20 条用例 × 5 类（v0 冻结）；Windows 开发态 SKIPPED——正式发布需 Linux/WSL2 全 PASS（AL-04 P1：任一逃逸阻塞）"}
+{"stage":"S4-签名与归档","gate":"G-08 cosign keyless 签名","verdict":"DRY-RUN","ts":1788579212428,"detail":"需 GitHub OIDC + Sigstore（远端）"}
+{"stage":"S4-签名与归档","gate":"G-09 npm provenance（OIDC 可信发布）","verdict":"DRY-RUN","ts":1788579212428,"detail":"需 npm publish 通道（远端）"}
+{"stage":"S4-签名与归档","gate":"G-10 GitHub Releases 归档（napi 二进制+SBOM+校验和）","verdict":"DRY-RUN","ts":1788579212429,"detail":"需远端仓库（远端）"}
+{"stage":"S6-制品封装","gate":"G-11 制品校验和（SHA-256）","verdict":"PASS","ts":1788579213679,"detail":"car-runtime-0.3.0.tgz (279285 bytes) → SHA256SUMS"}
+{"stage":"S7-dist-tag 晋级模拟","gate":"G-12 渠道晋级：beta → rc → latest","verdict":"PASS","ts":1788579213712,"detail":"{\"beta\":\"0.3.0\",\"rc\":null,\"latest\":\"0.2.0\",\"immutable\":[]}"}
+{"stage":"S7-dist-tag 晋级模拟","gate":"G-13 回滚演练：latest 回指 + 前滚补丁","verdict":"PASS","ts":1788579213713,"detail":"npm 版本不可变（禁止覆盖已发布版本）；回滚=dist-tag 回指，破坏性变更走 major+reader 兼容（SessionEventMap 只增不删）"}

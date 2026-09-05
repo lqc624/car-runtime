@@ -1,7 +1,7 @@
 {
   "bomFormat": "CAR-SBOM",
   "specVersion": "0.1",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "components": [
     {
       "type": "file",
@@ -20,6 +20,26 @@
     },
     {
       "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/host/facade.ts",
+      "sha256": "04ef748c816dd152506f92fbbdcc7062bb9b15b503d45ccbec98f7ed045810fe"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/host/hostGateway.ts",
+      "sha256": "12c2915259f2cb773b9e1e8ae0ed75006c0a5a00e8dcac64b7a742b041b8ddd6"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/host/mappings.ts",
+      "sha256": "01e57ad2a89c828a5e0d43d3d98d1c4a9db4601fffe32f4c9678b268057b006c"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/host/stdio.ts",
+      "sha256": "47c026ffffd5d4298d3fe7217016d529501ca0de635c8c14658adac586e28712"
+    },
+    {
+      "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/kernel/context.ts",
       "sha256": "b69dfb6698791632458c1585f2d85ef7daa570c3f17be2e304bfba6622bbd995"
     },
@@ -31,7 +51,12 @@
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/load/loader.ts",
-      "sha256": "669d028f62d37e5e34afaa7fee920cdd835a119676771782e259641a1d0249b9"
+      "sha256": "1a2dcf6febd2a1e349db278886e63ad0ab86862a7b4adf2ff5f5264aa4a6ebff"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/load/registry.ts",
+      "sha256": "34c88fa678012444a1f9fc614a41a33e8b3880ea14875e3464fd64dfc7f563e6"
     },
     {
       "type": "file",
@@ -51,12 +76,37 @@
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/loop/stop.ts",
-      "sha256": "f1bf6bd09701e6d53b86f352bc4da1728d544cf60ffda78eac74922383d46121"
+      "sha256": "0639b2835de4536f589eaefc76c294034662f90141e4a30d8e7702df2ab78d74"
     },
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/mcp/gateway.ts",
-      "sha256": "f1702987886a8a1e98958d9a49c4f48908ca8a566aa0d8c2fa2e263814caab26"
+      "sha256": "dc42b7b92b6e98ccd1ed8827f59c219bd276626dc1f41610636154b691257115"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/ptc/budget.ts",
+      "sha256": "61d9419b6e6a9fb722f81a86731108e0f0078f0211dbb87b4de6cf3396c5231a"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/ptc/erasable.ts",
+      "sha256": "8579ce6e6d501cc534a119dde0ae55e539cd79ce4397be6a6ba8f7a0b8eaa975"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/ptc/runCode.ts",
+      "sha256": "f7d13517b6b811a1798c4e332788ca2654d03d54464a5cb8f18e8f32ef1065e5"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/ptc/sdk.ts",
+      "sha256": "7a39da15b151cb84b3fe98f3f08a85b91825ad1003ab71de51092f124f077084"
+    },
+    {
+      "type": "file",
+      "path": "D:/WorkBuddy/agent/car-runtime/src/ptc/worker-entry.ts",
+      "sha256": "91fca3efdf813bd74f32708ab8e7b1f8218c8eaf98d24431420b1bedc90e355c"
     },
     {
       "type": "file",
@@ -76,17 +126,17 @@
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/src/session/log.ts",
-      "sha256": "fdb305ec9595f905cb0ab078f6e337cab1475319fb9a9281844c13e9b56fa971"
+      "sha256": "83437cd7e6d9a4115696827cb5583681f4f6a630f903dfb2ea1f11768a96ffb2"
     },
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/package.json",
-      "sha256": "8dd8cdfd450a85dfef05f3beba6643460720fc81cb833add508f8dc9769ba182"
+      "sha256": "efa7035e1b4447fa2c64eabc935b7560f3d0869a576e13b22db58a988945ce75"
     },
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/README.md",
-      "sha256": "70b3e1a33fc75dcfb1a94d2ee55e35ec8b2a659947ac9d3a9eb10127ebbcfe7d"
+      "sha256": "2c8aa86ccdedaef0fe776f3eb9b2ff64f9e3eaeb51510eef222f6da3288938b3"
     }
   ],
   "runtimeDependencies": []

@@ -1,6 +1,6 @@
 {
   "name": "@car/runtime",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Composable Agent Runtime - S1 skeleton (kernel F1/F9 + session log F2/N1)",
   "license": "MIT",
   "type": "module",
