@@ -3,7 +3,7 @@
  *
  * 口径（M3系统设计增补 T-1 / M3部署设计增补 §4 多宿主拓扑：stdio 为 M3 主形态）：
  *  - 换行分隔 JSON-RPC 2.0（与 M1 client 侧 gateway 同帧格式）；
- *  - 方法面：tools/list（9 tool 能力发现）+ tools/call（分发到 HostGateway.handle）；
+ *  - 方法面：initialize/notifications 握手（MCP 协议兼容）+ tools/list（9 tool 能力发现）+ tools/call（分发到 HostGateway.handle）；
  *  - 所有到达请求与响应均经 HostGateway 审计（无旁路）；未登记宿主在 handle 层拒绝；
  *  - stdin 结束（宿主退出）→ 通道关闭，进程内状态由审计日志承载（BD-02 等价：不静默丢数据）。
  */
@@ -39,6 +39,19 @@ export function createStdioServer(dispatch: StdioDispatcher): StdioServer {
         const respond = (result: unknown, error?: { code: number; message: string }) => {
           output.write(JSON.stringify({ jsonrpc: '2.0', id: req.id ?? nextId, ...(error ? { error } : { result }) }) + '\n')
         }
+        // MCP 协议握手（E-6 实连前置）：真实宿主客户端先发 initialize → 回 serverInfo；
+        // notifications/initialized 为无 id 通知，不响应（协议规定）
+        if (req.method === 'initialize') {
+          respond({
+            protocolVersion: (req.params as { protocolVersion?: string } | undefined)?.protocolVersion ?? '2024-11-05',
+            capabilities: { tools: { listChanged: false } },
+            serverInfo: { name: 'car-runtime', version: '0.3.0' },
+          })
+          return
+        }
+        if (req.method === 'notifications/initialized' || (req.method ?? '').startsWith('notifications/')) {
+          return // 通知无响应
+        }
         if (req.method === 'tools/list') {
           respond({ tools: HOST_TOOLS.map((t: HostTool) => ({ name: t })) })
           return
@@ -52,7 +65,7 @@ export function createStdioServer(dispatch: StdioDispatcher): StdioServer {
           }).catch(e => respond(undefined, { code: -32000, message: String(e) }))
           return
         }
-        respond(undefined, { code: -32601, message: `unknown method "${req.method}"（仅 tools/list 与 tools/call）` })
+        respond(undefined, { code: -32601, message: `unknown method "${req.method}"（支持 initialize / tools/list / tools/call）` })
       })
       await done
       return count

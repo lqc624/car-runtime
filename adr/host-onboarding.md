@@ -55,6 +55,13 @@ args = [
   `assertZeroContent` 自检内建；
 - 登记表兜底：企业未开启遥测时，人工抄录快照行即可满足 S20 enforce 决策的数据输入（双通道设计）。
 
+## E-6 实连执行记录（2026-09-05 · 本机冒烟 ✅）
+
+- 协议握手已实装（initialize / notifications/initialized——MCP 协议兼容，冒烟前置补齐）；
+- 本机端到端冒烟（真实 spawn 进程，配置同款命令行）：initialize serverInfo=car-runtime 0.3.0 → tools/list 9 → session_start=SH-fa5c8838469ba4599032d35b → session_turn completed → session_verify ok → stderr 快照 zeroContent=true；
+- 宿主侧配置已写入：Claude Code 项目级 `D:/WorkBuddy/agent/.mcp.json` + Codex `~/.codex/config.toml` 追加段（command 用 Node 22.22.2 绝对路径——系统 node20 不支持 --experimental-transform-types）；
+- 待真实宿主 GUI 会话验证（启动 Claude Code 于本工作区 / codex 会话内确认 9 tool 出现）。
+
 ## 已知边界
 
 - 会话状态为进程内存态（进程退出即失）；跨进程持久化走 `session_export` 取证包 → S19 评估文件落盘增强；
