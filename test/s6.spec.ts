@@ -34,7 +34,7 @@ test('S6 D-2: 签名缺失——warn 告警放行（指纹兜底），enforce �
   const { pubB64 } = makeTrustRoot()
   const warn = enforceSignature(HASH, undefined, { trustRootPublicKey: pubB64, mode: 'warn' })
   assert.equal(warn.allowed, true)
-  assert.match(warn.warning!, /CAR-W-SIG.*S10 起 enforce/)
+  assert.match(warn.warning!, /CAR-W-SIG.*enforce 切换见 D-2 终局条件/)
   const enforce = enforceSignature(HASH, undefined, { trustRootPublicKey: pubB64, mode: 'enforce' })
   assert.equal(enforce.allowed, false)
   assert.match(enforce.error!, /signature missing/)

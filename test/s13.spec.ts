@@ -30,7 +30,7 @@ test('registry: ① 显式源绑定命中 → 直连；未命中 → 硬失败�
   assert.equal(hit.url, 'https://artifactory.corp.local/npm')
   const miss = resolvePackage({ name: 'pkg', version: '1.0.0', pinnedRegistry: 'https://evil.example.com' }, enterprise)
   assert.equal(miss.source, 'rejected')
-  assert.match(miss.detail, /不降级/)
+  assert.match(miss.detail, /硬失败不换源/)
 })
 
 test('registry: ③ 兜底可关——企业默认拒绝；④ 离线最高优先级', () => {

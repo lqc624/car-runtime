@@ -93,7 +93,14 @@ node --experimental-transform-types --test test/*.spec.ts
 
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ M2：S5-S10 全过 **89/89**（v0.2.0）｜ M3：S11→S12→S13→S14→S15 全过 → **S16 收口终验 ✅（127/127，发布预演 9 PASS / 4 DRY-RUN，版本 0.3.0）**
+| `src/load/registry.ts` +2 | S17 T-5 终局对齐实装：exclude 通道（类型上仅 reason='network'——校验失败换源不可表达）+ 候选耗尽语义修正 + resolveCandidateChain 预览 + pinned 网络失败按 priority 继续 | M4安全增补registry对齐 |
+| `src/telemetry/metrics.ts` | S17 采集面：3 个零内容 Counter（load_total/unsigned_confirmed/registry_decision）+ snapshot 登记表兜底通道 + assertZeroContent 红线自检 | Q-08、D-2 数据窗口前置 |
+| `test/s17.spec.ts` | 9 项断言（exclude 三路径/耗尽 fail-closed/候选链预览/零内容红线/verifier 采集挂点） | T-5 定稿② |
+
+## 状态
+
+- S1-S4：48/48 ✅ ｜ M2：89/89（v0.2.0）｜ M3：127/127（v0.3.0）｜ **M4-S17：+8 → 135/135 ✅**
+- M4 待办：S18 Claude Code 实连 + 采集窗口开启（采集面已就位）；S19 Codex 实连 + registry 增补评审；S20 enforce 决策 + PTC 评测（脚本 2 人日待实装）；轨道 A（你）：E-1/E-2/E-3 沙箱外。
 - 环境动作清单（E-1~E-4 + E-6 宿主实连试点）与遗留移交见 delivery/M3收口终验报告.md；M4 预埋：fork 跨宿主/深度参数渲染/定时导出。
 - **内核行为修复（S14 捕获）**：工具异常原会终止 turn（reason=error）——已修为「成对错误 toolResult 交回模型」（US-5/D5 语义：工具错误是结果而非 turn 中断），121 断言零回退。
 - 环境动作清单（E-1~E-5）与遗留移交（T-8 等）见 delivery/M2收口终验报告.md；G-03 豁免机制：secrets 规则库/标定基准显式列文件豁免，清单变更需评审。

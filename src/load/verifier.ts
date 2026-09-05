@@ -41,7 +41,7 @@ export function verifyMinisig(manifestHash: string, minisig: string, trustRootPu
  * 验签入口（装载前调用，A010001 之前的供应链第一道门）：
  * 返回 { allowed, warning? }——warning 非空时调用方必须告警放行并留痕（enforce 前过渡期）
  */
-export function enforceSignature(manifestHash: string, sig: SignatureBundle | undefined, deps: VerifierDeps): { allowed: boolean; warning?: string; error?: string } {
+export function enforceSignature(manifestHash: string, sig: SignatureBundle | undefined, deps: VerifierDeps, onCount?: (name: 'car_unsigned_confirmed', labels: { confirmed: 'yes' | 'no' }) => void): { allowed: boolean; warning?: string; error?: string } {
   // 主轨探针：可用则先走 Sigstore（S6 骨架期默认不可用 → 回退静态轨）
   if (deps.sigstoreAvailable?.()) {
     if (sig?.sigstoreBundle) {
@@ -61,5 +61,7 @@ export function enforceSignature(manifestHash: string, sig: SignatureBundle | un
   if (deps.mode === 'enforce') {
     return { allowed: false, error: 'CAR-E-SIG: signature missing (enforce mode)——manifestHash 指纹兜底不替代签名' }
   }
-  return { allowed: true, warning: 'CAR-W-SIG: unsigned plugin（warn 过渡期放行，manifestHash 指纹兜底；S10 起 enforce 拒绝）' }
+  // S17 采集面：unsigned 路径计数（零内容 labels；confirmed=no=未确认 warn / yes=显式确认豁免动作）
+  onCount?.('car_unsigned_confirmed', { confirmed: 'no' })
+  return { allowed: true, warning: 'CAR-W-SIG: unsigned plugin（warn 过渡期放行，manifestHash 指纹兜底；enforce 切换见 D-2 终局条件）' }
 }
