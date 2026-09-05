@@ -88,7 +88,12 @@ node --experimental-transform-types --test test/*.spec.ts
 
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ M2：S5-S10 全过 **89/89**（v0.2.0）｜ M3：S11→S12→S13→**S14 121/121 ✅（+10）**
+| `src/ptc/sdk.ts` | S15 TS SDK 渲染：注册表快照→system prompt TS 声明（非 .d.ts）；声明面/授权面结构一致性（渲染只接受注册表自身，漂移在结构上不可能） | T-2、dsh :26,97 口径 |
+| `src/ptc/runCode.ts` +2 | S15 授权门前置（拒绝=无 worker 启动+ptc-denied 留痕，authorizationId='ptc-'+id 幂等）+ F12 出站覆盖（worker 输出回填前强制 redact，secretsRedacted 计数） | T-4、决议③红线 |
+
+## 状态
+
+- S1-S4：48/48 ✅ ｜ M2：S5-S10 全过 **89/89**（v0.2.0）｜ M3：S11→S12→S13→S14→**S15 127/127 ✅（+6）**
 - **内核行为修复（S14 捕获）**：工具异常原会终止 turn（reason=error）——已修为「成对错误 toolResult 交回模型」（US-5/D5 语义：工具错误是结果而非 turn 中断），121 断言零回退。
 - 环境动作清单（E-1~E-5）与遗留移交（T-8 等）见 delivery/M2收口终验报告.md；G-03 豁免机制：secrets 规则库/标定基准显式列文件豁免，清单变更需评审。
 - M2 待办：S6 验签器实装（ADR-003）+ F13 五层停止（M2系统设计增补 T-1）；S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出；S10 收口。

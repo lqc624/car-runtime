@@ -14,9 +14,11 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { convergeBudget, type PtcBudget } from './budget.ts'
 import { checkErasableOnly } from './erasable.ts'
+import { redactSecrets } from '../security/secrets.ts'
 
 export interface PtcRequest { code: string; description: string; toolCallId: string; budget?: Partial<PtcBudget> }
-export interface PtcResult { ok: boolean; result?: unknown; error?: string; wallMs: number; outputBytes: number; budgetExceeded?: boolean }
+export interface PtcResult { ok: boolean; result?: unknown; error?: string; wallMs: number; outputBytes: number; budgetExceeded?: boolean
+  /** F12 出站覆盖命中数（secrets 脱敏在回填上下文前强制执行） */ secretsRedacted?: number }
 
 export interface ToolBridge { run(args: unknown): Promise<unknown> }
 
@@ -25,10 +27,21 @@ const MAX_CONCURRENT = 4
 let active = 0
 
 /** PTC 程序执行：每次新 worker；子调用经消息桥回主线程执行工具（宿主权限门生效面） */
-export async function runCode(req: PtcRequest, opts: { tools: Map<string, ToolBridge>; audit?: (d: Record<string, unknown>) => void }): Promise<PtcResult> {
+export interface RunCodeOpts { tools: Map<string, ToolBridge>; audit?: (d: Record<string, unknown>) => void
+  /** 授权门（S15）：返回 false = 拒绝（无 worker 启动，审计留痕）；authorizationId 幂等由 authz 服务承载 */ authorize?: (req: PtcRequest) => Promise<boolean> }
+
+export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcResult> {
   // 双必填（description 为授权凭据——S15 授权门消费）
   if (!req.code?.trim()) throw new Error('CAR-E-PTC: code is required（run_code 双必填）')
   if (!req.description?.trim()) throw new Error('CAR-E-PTC: description is required——授权门人审凭据（无默认值，M3系统设计增补 T-2）')
+  // 授权门前置（无 worker 启动）：拒绝 = 工具错误结果 + 审计留痕（authorizationId='ptc-'+id 幂等键）
+  if (opts.authorize) {
+    const granted = await opts.authorize(req)
+    if (!granted) {
+      opts.audit?.({ kind: 'ptc-denied', toolCallId: req.toolCallId, authorizationId: 'ptc-' + req.toolCallId, description: req.description })
+      return { ok: false, error: 'authorization-denied (ptc)——授权拒绝落审计，程序未执行', wallMs: 0, outputBytes: 0 }
+    }
+  }
   // erasable-only 挂点（入口）
   const era = checkErasableOnly(req.code)
   if (!era.ok) throw new Error(`CAR-E-PTC: ${era.violation}`)
@@ -60,13 +73,26 @@ export async function runCode(req: PtcRequest, opts: { tools: Map<string, ToolBr
         }
         if (m.type === 'done') {
           clearTimeout(killer)
+          // F12 出站覆盖：worker 输出回填上下文前强制 redact（M3安全设计增补 T-4）
+          let result = m.result
+          let secretsRedacted = 0
+          if (result !== undefined) {
+            const serialized = JSON.stringify(result)
+            const r = redactSecrets(serialized)
+            secretsRedacted = r.redacted
+            if (r.redacted > 0) {
+              result = JSON.parse(r.text)
+              opts.audit?.({ kind: 'ptc-secrets-redacted', toolCallId: req.toolCallId, hits: r.redacted })
+            }
+          }
           resolve({
             ok: !m.error,
-            result: m.result,
+            result,
             error: m.error,
             wallMs: Date.now() - started,
-            outputBytes: Buffer.byteLength(JSON.stringify(m.result ?? null)),
+            outputBytes: Buffer.byteLength(JSON.stringify(result ?? null)),
             budgetExceeded: !!m.error?.startsWith('budget-exceeded'),
+            secretsRedacted,
           })
         }
       })
