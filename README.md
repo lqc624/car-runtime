@@ -99,7 +99,14 @@ node --experimental-transform-types --test test/*.spec.ts
 
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ M2：89/89（v0.2.0）｜ M3：127/127（v0.3.0）｜ **M4-S17：+8 → 135/135 ✅**
+| `src/cli.ts mcp-serve` | S18 CAR-as-MCP-Server 真实进程入口：--host 数据驱动白名单 + counters 挂载 + 会话结束 stderr 零内容快照（stdout 协议通道不污染） | E-6 实连前置 |
+| `adr/host-onboarding.md` | 宿主接入指南：Claude Code .mcp.json / Codex config.toml 配置片段 + 五类契约手工验证清单 + 采集窗口说明 | E-6 |
+| `test/s18.spec.ts` | 4 项断言（**spawn 真实子进程** stdio 全链路/跨进程幂等派生/采集快照/未知宿主 exit 2） | E-6 进程级预演 |
+
+## 状态
+
+- S1-S4：48/48 ✅ ｜ M2：89/89（v0.2.0）｜ M3：127/127（v0.3.0）｜ M4：S17 → **S18 +4 → 139/139 ✅**
+- M4 待办：S19 Codex 实连（宿主侧配置就绪，真进程接入待试点环境）+ registry 增补评审（T-5 归档门）；S20 enforce 决策（采集窗口 S18 已开启）+ PTC 评测脚本；轨道 A（你）：E-1/E-2/E-3。
 - M4 待办：S18 Claude Code 实连 + 采集窗口开启（采集面已就位）；S19 Codex 实连 + registry 增补评审；S20 enforce 决策 + PTC 评测（脚本 2 人日待实装）；轨道 A（你）：E-1/E-2/E-3 沙箱外。
 - 环境动作清单（E-1~E-4 + E-6 宿主实连试点）与遗留移交见 delivery/M3收口终验报告.md；M4 预埋：fork 跨宿主/深度参数渲染/定时导出。
 - **内核行为修复（S14 捕获）**：工具异常原会终止 turn（reason=error）——已修为「成对错误 toolResult 交回模型」（US-5/D5 语义：工具错误是结果而非 turn 中断），121 断言零回退。

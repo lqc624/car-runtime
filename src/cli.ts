@@ -87,6 +87,32 @@ async function main(): Promise<number> {
       }
       console.error(HELP); return 2
     }
+    case 'mcp-serve': {
+      // E-6 宿主实连入口（M4-S18）：CAR-as-MCP-Server——宿主（Claude Code/Codex）经 stdio JSON-RPC 接入
+      const hostIdx = rest.indexOf('--host')
+      const { HOST_MAPPINGS } = await import('./host/mappings.ts')
+      // 默认宿主取映射表首项（数据驱动，静态架构断言红线：宿主标识只在 mappings 数据文件）
+      const hostId = hostIdx >= 0 ? rest[hostIdx + 1] : HOST_MAPPINGS[0].hostId
+      // 宿主白名单数据驱动（静态架构断言红线：宿主标识字符串只允许出现在 mappings 数据文件）
+      if (!HOST_MAPPINGS.some(h => h.hostId === hostId)) {
+        console.error(`未知宿主 "${hostId}"（可用：${HOST_MAPPINGS.map(h => h.hostId).join(' | ')}）`); return 2
+      }
+      const { HostGateway } = await import('./host/hostGateway.ts')
+      const { createRuntimeFacade } = await import('./host/facade.ts')
+      const { createStdioServer } = await import('./host/stdio.ts')
+      const { createCounters, assertZeroContent } = await import('./telemetry/metrics.ts')
+      const counters = createCounters()
+      const profiles = new Map(HOST_MAPPINGS.map(h => [h.hostId, h]))
+      const facade = createRuntimeFacade({ profiles })
+      const gw = new HostGateway({ facade, audit: e => counters.onCount('car_registry_decision', { source: 'registry' }) })
+      for (const h of HOST_MAPPINGS) gw.registerHost({ hostId: h.hostId, profile: h, transport: {} as never })
+      const server = createStdioServer((tool, args) => gw.handle(hostId, tool, args))
+      const n = await server.serve(process.stdin, process.stdout)
+      // 采集窗口收口（登记表兜底通道）：快照写 stderr（stdout 为协议通道不可污染）
+      const snap = counters.snapshot()
+      console.error(`[car mcp-serve] host=${hostId} requests=${n} snapshot=${JSON.stringify(snap)} zeroContent=${assertZeroContent(snap)}`)
+      return 0
+    }
     default:
       console.log(HELP)
       return cmd ? 2 : 0
