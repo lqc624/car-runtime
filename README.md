@@ -84,7 +84,12 @@ node --experimental-transform-types --test test/*.spec.ts
 
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ M2：S5-S10 全过 **89/89**（v0.2.0）｜ M3：S11 → S12 → **S13 111/111 ✅（+7）**
+| `src/ptc/` | S14 PTC I：budget（三层收敛只许下调 CAR-E-BUDGET）+ erasable 双挂点（入口+loader）+ worker-entry（async 函数体/tools proxy 消息桥/wallTimer）+ runCode（code+description 双必填、并发护栏 4、双层预算、makePtcToolDefinition 强制 write） | 决议③、T-2 |
+
+## 状态
+
+- S1-S4：48/48 ✅ ｜ M2：S5-S10 全过 **89/89**（v0.2.0）｜ M3：S11→S12→S13→**S14 121/121 ✅（+10）**
+- **内核行为修复（S14 捕获）**：工具异常原会终止 turn（reason=error）——已修为「成对错误 toolResult 交回模型」（US-5/D5 语义：工具错误是结果而非 turn 中断），121 断言零回退。
 - 环境动作清单（E-1~E-5）与遗留移交（T-8 等）见 delivery/M2收口终验报告.md；G-03 豁免机制：secrets 规则库/标定基准显式列文件豁免，清单变更需评审。
 - M2 待办：S6 验签器实装（ADR-003）+ F13 五层停止（M2系统设计增补 T-1）；S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出；S10 收口。
 - **N2 实测**：首插件跑通 3ms（目标 ≤300s，余量 10 万倍）

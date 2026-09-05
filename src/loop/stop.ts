@@ -93,8 +93,17 @@ export async function runTurn(opts: {
         log.append('runtime', 'toolResult', turnId, { id: call.id, error: 'authorization-denied', granted, mode: preset.mode })
         if (!granted) { denies++; continue }
       }
-      const result = await def.run(call.args)
-      log.append('plugin', 'toolResult', turnId, { id: call.id, result })
+      // 工具错误 = 成对 toolResult 交回模型（US-5/D5 语义：工具错误是结果而非 turn 中断——
+      // 与取消补记成对事件同纪律；turn 级 error 仅保留给模型请求/协议层失败）
+      let result: unknown
+      let toolError: string | undefined
+      try {
+        result = await def.run(call.args)
+      } catch (e) {
+        result = undefined
+        toolError = String(e)
+      }
+      log.append('plugin', 'toolResult', turnId, { id: call.id, result, ...(toolError ? { error: toolError } : {}) })
       finalized++
       if (def.concludesTurn) { concludesTurn = true; concludesVotes++ }
       if (def.terminate) terminateVotes++

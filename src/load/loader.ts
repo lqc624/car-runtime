@@ -10,6 +10,8 @@
  *  - manifest：name 必填、version 精确 semver（禁区间）；peer 校验挂点预留（O7，M2 启用）
  */
 import { pathToFileURL } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { checkErasableOnly } from '../ptc/erasable.ts'
 
 /** 简易 semver 区间求解（M2 S5：仅支持 ^x.y.z / x.y.z 两种形态；完整区间求解 M3 扩展） */
 function satisfiesRange(version: string, range: string): boolean {
@@ -134,6 +136,9 @@ export async function mountPlugin(spec: {
 }): Promise<LoadedPlugin> {
   const manifest = parseManifest(spec.manifest, spec.file)
   const epoch = spec.reloadEpoch ?? 0
+  // erasable-only 双挂点之二：loader 提交链（挂点一在 run_code 入口——单一事实源 checkErasableOnly）
+  const era = checkErasableOnly(readFileSync(spec.file, 'utf-8'))
+  if (!era.ok) throw new Error(`CAR-E-PTC: ${era.violation} (file: ${spec.file})`)
   const mod = (await import(pathToFileURL(spec.file).href + (epoch ? `?epoch=${epoch}` : ''))) as {
     default: (api: PluginApi) => void
   }
