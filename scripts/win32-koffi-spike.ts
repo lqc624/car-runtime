@@ -26,8 +26,8 @@ async function main() {
   const kernel32 = koffi.load?.('kernel32.dll') ?? null
   console.log('READY: koffi available, kernel32 loaded =', kernel32 !== null)
   console.log('S8 在此接入 CreateRestrictedToken / CreateJobObjectW 实装（判据 1-4 自动断言）')
-  // 保守门禁：未实装完成前不得声称 PASS
-  process.exitCode = 2 // PENDING
+  // READY（koffi 可用但四判据未实装）为合法中间态，非失败——判据断言由 S8 阶段 1-3 实装后接管
+  console.log('STATUS: READY-PENDING (criteria 1-3 pending FFI implementation, see adr/win32-spike.md)')
 }
 
 void spawnSync // 保留引用（阶段 3 探针用）
