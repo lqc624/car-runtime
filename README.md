@@ -73,7 +73,13 @@ node --experimental-transform-types --test test/*.spec.ts
 
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ M2：S5-S10 全过 **89/89**（v0.2.0，发布预演 9 PASS / 4 DRY-RUN）｜ **M3-S11：多宿主骨架 +10 → 99/99 ✅**
+| `src/host/stdio.ts` | S12 stdio ServerTransport：JSON-RPC over 换行分隔 JSON（tools/list + tools/call 分发），非法 JSON/未知 method 显式报错不崩溃 | 多宿主主形态（部署增补 §4） |
+| `src/host/facade.ts` | S12 RuntimeFacade 真实实现：sessionStart 幂等建会话+登记事件落哈希链；sessionTurn 事件批归一化落盘（hostRaw 零静默）；replay/verify/export 全通 | T-1 数据流 |
+| `test/s12.spec.ts` | 5 项断言（stdio 双方法+容错/端到端落链+离线重放/跨宿主投影等价/审计无旁路） | 双宿主等价核心 |
+
+## 状态
+
+- S1-S4：48/48 ✅ ｜ M2：S5-S10 全过 **89/89**（v0.2.0）｜ M3：S11 99/99 ✅ → **S12 104/104 ✅（+5）**
 - 环境动作清单（E-1~E-5）与遗留移交（T-8 等）见 delivery/M2收口终验报告.md；G-03 豁免机制：secrets 规则库/标定基准显式列文件豁免，清单变更需评审。
 - M2 待办：S6 验签器实装（ADR-003）+ F13 五层停止（M2系统设计增补 T-1）；S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出；S10 收口。
 - **N2 实测**：首插件跑通 3ms（目标 ≤300s，余量 10 万倍）

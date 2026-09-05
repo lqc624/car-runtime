@@ -68,7 +68,7 @@ export class HostGateway {
     const fn = (this.#facade as unknown as Record<string, (a: Record<string, unknown>) => Promise<unknown>>)[camel]
     if (typeof fn !== 'function') return { ok: false, error: `host tool "${tool}" not wired in RuntimeFacade（S12 接线）` }
     try {
-      const result = await fn.call(this.#facade, args)
+      const result = await fn.call(this.#facade, { ...args, __hostId: hostId })
       this.#audit({ kind: 'host-call', detail: { hostId, tool, normalized: tool !== 'session_start' ? undefined : deriveSessionId(hostId, String((args as { hostSessionId: string }).hostSessionId)) }, ts: Date.now() })
       return { ok: true, result }
     } catch (e) {
