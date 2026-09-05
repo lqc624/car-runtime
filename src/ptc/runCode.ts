@@ -66,8 +66,13 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
       worker.on('message', (m: { type: string; callId?: string; name?: string; args?: unknown; result?: unknown; error?: string }) => {
         if (m.type === 'tool') {
           const def = opts.tools.get(m.name!)
+          // 工具异常必须回传为 tool-result error（供程序体 try/catch 恢复）——
+          // 无 catch 会成为 unhandled rejection 崩溃主进程（S19 评测 E1 捕获）
           void (def
-            ? def.run(m.args).then(r => worker.postMessage({ type: 'tool-result', callId: m.callId, result: r }))
+            ? def.run(m.args).then(
+                r => worker.postMessage({ type: 'tool-result', callId: m.callId, result: r }),
+                (e: unknown) => worker.postMessage({ type: 'tool-result', callId: m.callId, error: String(e) }),
+              )
             : Promise.resolve(worker.postMessage({ type: 'tool-result', callId: m.callId, error: `unknown tool "${m.name}"` })))
           return
         }

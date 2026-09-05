@@ -1,0 +1,60 @@
+{"task":"C1","cls":"compute","run":0,"ok":true}
+{"task":"C1","cls":"compute","run":1,"ok":true}
+{"task":"C1","cls":"compute","run":2,"ok":true}
+{"task":"C1","cls":"compute","run":3,"ok":true}
+{"task":"C1","cls":"compute","run":4,"ok":true}
+{"task":"C2","cls":"compute","run":0,"ok":true}
+{"task":"C2","cls":"compute","run":1,"ok":true}
+{"task":"C2","cls":"compute","run":2,"ok":true}
+{"task":"C2","cls":"compute","run":3,"ok":true}
+{"task":"C2","cls":"compute","run":4,"ok":true}
+{"task":"S1","cls":"single-tool","run":0,"ok":true}
+{"task":"S1","cls":"single-tool","run":1,"ok":true}
+{"task":"S1","cls":"single-tool","run":2,"ok":true}
+{"task":"S1","cls":"single-tool","run":3,"ok":true}
+{"task":"S1","cls":"single-tool","run":4,"ok":true}
+{"task":"S2","cls":"single-tool","run":0,"ok":true}
+{"task":"S2","cls":"single-tool","run":1,"ok":true}
+{"task":"S2","cls":"single-tool","run":2,"ok":true}
+{"task":"S2","cls":"single-tool","run":3,"ok":true}
+{"task":"S2","cls":"single-tool","run":4,"ok":true}
+{"task":"O1","cls":"orchestration","run":0,"ok":true}
+{"task":"O1","cls":"orchestration","run":1,"ok":true}
+{"task":"O1","cls":"orchestration","run":2,"ok":true}
+{"task":"O1","cls":"orchestration","run":3,"ok":true}
+{"task":"O1","cls":"orchestration","run":4,"ok":true}
+{"task":"O2","cls":"orchestration","run":0,"ok":true}
+{"task":"O2","cls":"orchestration","run":1,"ok":true}
+{"task":"O2","cls":"orchestration","run":2,"ok":true}
+{"task":"O2","cls":"orchestration","run":3,"ok":true}
+{"task":"O2","cls":"orchestration","run":4,"ok":true}
+{"task":"O3","cls":"orchestration","run":0,"ok":true}
+{"task":"O3","cls":"orchestration","run":1,"ok":true}
+{"task":"O3","cls":"orchestration","run":2,"ok":true}
+{"task":"O3","cls":"orchestration","run":3,"ok":true}
+{"task":"O3","cls":"orchestration","run":4,"ok":true}
+{"task":"E1","cls":"error-recovery","run":0,"ok":true}
+{"task":"E1","cls":"error-recovery","run":1,"ok":true}
+{"task":"E1","cls":"error-recovery","run":2,"ok":true}
+{"task":"E1","cls":"error-recovery","run":3,"ok":true}
+{"task":"E1","cls":"error-recovery","run":4,"ok":true}
+{"task":"E2","cls":"error-recovery","run":0,"ok":true}
+{"task":"E2","cls":"error-recovery","run":1,"ok":true}
+{"task":"E2","cls":"error-recovery","run":2,"ok":true}
+{"task":"E2","cls":"error-recovery","run":3,"ok":true}
+{"task":"E2","cls":"error-recovery","run":4,"ok":true}
+{"task":"E3","cls":"error-recovery","run":0,"ok":true}
+{"task":"E3","cls":"error-recovery","run":1,"ok":true}
+{"task":"E3","cls":"error-recovery","run":2,"ok":true}
+{"task":"E3","cls":"error-recovery","run":3,"ok":true}
+{"task":"E3","cls":"error-recovery","run":4,"ok":true}
+{"task":"B1","cls":"budget-edge","run":0,"ok":true,"error":"budget-exceeded (maxOutputBytes=8388608)","budgetExceeded":true}
+{"task":"B1","cls":"budget-edge","run":1,"ok":true,"error":"budget-exceeded (maxOutputBytes=8388608)","budgetExceeded":true}
+{"task":"B1","cls":"budget-edge","run":2,"ok":true,"error":"budget-exceeded (maxOutputBytes=8388608)","budgetExceeded":true}
+{"task":"B1","cls":"budget-edge","run":3,"ok":true,"error":"budget-exceeded (maxOutputBytes=8388608)","budgetExceeded":true}
+{"task":"B1","cls":"budget-edge","run":4,"ok":true,"error":"budget-exceeded (maxOutputBytes=8388608)","budgetExceeded":true}
+{"task":"B2","cls":"budget-edge","run":0,"ok":true,"error":"budget-exceeded (maxWallMs=400)——预算到期为资源护栏，不掐 turn（工具错误结果交回模型）","budgetExceeded":true}
+{"task":"B2","cls":"budget-edge","run":1,"ok":true,"error":"budget-exceeded (maxWallMs=400)——预算到期为资源护栏，不掐 turn（工具错误结果交回模型）","budgetExceeded":true}
+{"task":"B2","cls":"budget-edge","run":2,"ok":true,"error":"budget-exceeded (maxWallMs=400)——预算到期为资源护栏，不掐 turn（工具错误结果交回模型）","budgetExceeded":true}
+{"task":"B2","cls":"budget-edge","run":3,"ok":true,"error":"budget-exceeded (maxWallMs=400)——预算到期为资源护栏，不掐 turn（工具错误结果交回模型）","budgetExceeded":true}
+{"task":"B2","cls":"budget-edge","run":4,"ok":true,"error":"budget-exceeded (maxWallMs=400)——预算到期为资源护栏，不掐 turn（工具错误结果交回模型）","budgetExceeded":true}

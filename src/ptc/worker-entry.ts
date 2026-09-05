@@ -42,9 +42,17 @@ const wallTimer = setTimeout(() => finish({ type: 'done', error: `budget-exceede
 void (async () => {
   try {
     const code = (workerData as { code: string }).code
+    // erasable-only 的执行端：eval 前剥离类型（Node 22.13+ 内置 stripTypeScriptTypes）——
+    // 程序体是 erasable TS（含类型注解），new Function 是纯 JS 求值器，不剥离则注解即 SyntaxError
+    const { stripTypeScriptTypes } = await import('node:module')
+    // stripTypeScriptTypes 以「模块」语义解析——片段含顶层 return 会报 ERR_INVALID_TYPESCRIPT_SYNTAX；
+    // 故先包成 export default 箭头函数再剥离，剥离后还原为 return 表达式（程序体含字面 export default 不受支持，见 erasable 禁项）
+    const wrapped = 'export default async () => {\n' + code + '\n}'
+    const js = stripTypeScriptTypes(wrapped, { mode: 'strip' })
+    const body = js.replace(/^export default /, 'return ')
     // 程序体 = async 函数体（顶层 await/return）；tools 为受控 proxy（仅显式调用，无宿主 import 面）
-    const fn = new Function('tools', '"use strict";\nreturn (async () => {\n' + code + '\n})()') as (t: typeof tools) => Promise<unknown>
-    const result = await fn(tools)
+    const fn = new Function('tools', '"use strict";\n' + body + '\n') as (t: typeof tools) => () => Promise<unknown>
+    const result = await fn(tools)()
     clearTimeout(wallTimer)
     const out = JSON.stringify(result ?? null)
     if (Buffer.byteLength(out) > budget.maxOutputBytes) {

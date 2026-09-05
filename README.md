@@ -105,7 +105,11 @@ node --experimental-transform-types --test test/*.spec.ts
 
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ M2：89/89（v0.2.0）｜ M3：127/127（v0.3.0）｜ M4：S17→S18 → **139/139 ✅ + E-6 冒烟通过**（MCP 握手实装：initialize/notifications；宿主配置已写入 .mcp.json 与 codex config.toml，Node 22.22.2 绝对路径）
+| `scripts/ptc-baseline/` | S19 T-7 评测脚本实装：12 任务五类 + 逐任务 N 次对照（非 PTC 基线）+ JSONL 明细/汇总——**首份实测：PTC 60/60=100% ≥ 非 PTC 100%，P1-4 ✅** | PRD P1-4 |
+
+## 状态
+
+- S1-S4：48/48 ✅ ｜ M2：89/89（v0.2.0）｜ M3：127/127（v0.3.0）｜ M4：S17→S18→**S19 139/139 + T-5 归档（勾稽 7/7）+ P1-4 首份实测 ✅**
 - M4 待办：S19 Codex 实连（宿主侧配置就绪，真进程接入待试点环境）+ registry 增补评审（T-5 归档门）；S20 enforce 决策（采集窗口 S18 已开启）+ PTC 评测脚本；轨道 A（你）：E-1/E-2/E-3。
 - M4 待办：S18 Claude Code 实连 + 采集窗口开启（采集面已就位）；S19 Codex 实连 + registry 增补评审；S20 enforce 决策 + PTC 评测（脚本 2 人日待实装）；轨道 A（你）：E-1/E-2/E-3 沙箱外。
 - 环境动作清单（E-1~E-4 + E-6 宿主实连试点）与遗留移交见 delivery/M3收口终验报告.md；M4 预埋：fork 跨宿主/深度参数渲染/定时导出。

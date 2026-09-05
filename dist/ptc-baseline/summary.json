@@ -1,0 +1,33 @@
+{
+  "runs": 5,
+  "ptc": 60,
+  "non": 60,
+  "total": 60,
+  "byClass": {
+    "compute": {
+      "ptc": 10,
+      "non": 10,
+      "total": 10
+    },
+    "single-tool": {
+      "ptc": 10,
+      "non": 10,
+      "total": 10
+    },
+    "orchestration": {
+      "ptc": 15,
+      "non": 15,
+      "total": 15
+    },
+    "error-recovery": {
+      "ptc": 15,
+      "non": 15,
+      "total": 15
+    },
+    "budget-edge": {
+      "ptc": 10,
+      "non": 10,
+      "total": 10
+    }
+  }
+}
