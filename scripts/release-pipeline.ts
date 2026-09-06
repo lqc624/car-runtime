@@ -8,7 +8,7 @@
  *
  * 运行：node --experimental-transform-types scripts/release-pipeline.ts
  */
-import { execSync } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -84,30 +84,63 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
   record(stage, 'G-06 版本一致性', ok, `version=${VERSION}（精确 semver 含 prerelease——rc 渠道合法形态；npm 不可变语义：禁止覆盖已发布版本）`)
 }
 
-// ── 阶段 3：沙箱逃逸回归（Linux 门禁，本机 DRY-RUN）──
+// ── 阶段 3：沙箱逃逸回归（Linux 门禁，WSL2 实跑后凭审计产物转 PASS）──
 {
   const stage = 'S3-沙箱逃逸回归'
   const matrixFile = join(ROOT, '..', 'deepseek-harness', 'm0-poc', 'poc4-sandbox-escape.ts')
-  record(stage, 'G-07 逃逸矩阵定义校验', existsSync(matrixFile), '20 条用例 × 5 类（v0 冻结）；Windows 开发态 SKIPPED——正式发布需 Linux/WSL2 全 PASS（AL-04 P1：任一逃逸阻塞）', process.platform !== 'linux')
+  // Linux 实跑审计产物（WSL2 内跑完后回拷，20 行逐用例 verdict=PASS）
+  const auditLinux = join(ROOT, '..', 'deepseek-harness', 'm0-poc', 'poc4-audit-linux.jsonl')
+  let linuxPass = false
+  let linuxDetail = '20 条用例 × 5 类（v0 冻结）；尚未在 Linux/WSL2 实跑——AL-04 P1：任一逃逸阻塞发布'
+  let linuxDryRun = process.platform !== 'linux'
+  if (existsSync(auditLinux)) {
+    const cases = readFileSync(auditLinux, 'utf-8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+    const passN = cases.filter(c => c.verdict === 'PASS').length
+    linuxPass = cases.length === 20 && passN === 20
+    linuxDryRun = false
+    linuxDetail = linuxPass
+      ? `20/20 PASS（backend=${cases[0]?.backend ?? '?'}）→ AL-04 满足`
+      : `审计产物不完整/含非 PASS：${cases.length} 行，${passN} PASS——AL-04 P1 任一逃逸即阻塞`
+  } else if (!existsSync(matrixFile)) {
+    linuxPass = false
+    linuxDryRun = false
+    linuxDetail = '逃逸矩阵用例定义文件缺失'
+  }
+  record(stage, 'G-07 逃逸矩阵实跑', linuxPass, linuxDetail, linuxDryRun)
 }
 
-// ── 阶段 4-5：签名与 provenance（远端依赖，DRY-RUN）──
+// ── 阶段 4-5：provenance 与远端归档（远端依赖，DRY-RUN）──
+// G-08 cosign 签名已移至 S6 之后本地实签（见 S6b）
 {
-  const stage = 'S4-签名与归档'
-  record(stage, 'G-08 cosign keyless 签名', true, '需 GitHub OIDC + Sigstore（远端）', true)
+  const stage = 'S4-provenance与远端归档'
   record(stage, 'G-09 npm provenance（OIDC 可信发布）', true, '需 npm publish 通道（远端）', true)
   record(stage, 'G-10 GitHub Releases 归档（napi 二进制+SBOM+校验和）', true, '需远端仓库（远端）', true)
 }
 
 // ── 阶段 6：本地制品封装 + 校验和 ──
+const TARBALL = join(DIST, `car-runtime-${VERSION}.tgz`)
 {
   const stage = 'S6-制品封装'
-  const tarName = `car-runtime-${VERSION}.tgz`
-  execSync(`git archive --format=tar.gz -o "${join(DIST, tarName)}" HEAD`, { cwd: ROOT })
-  const bytes = readFileSync(join(DIST, tarName))
-  const sums = `${sha256(bytes.toString('base64'))}  ${tarName}`
+  execSync(`git archive --format=tar.gz -o "${TARBALL}" HEAD`, { cwd: ROOT })
+  const bytes = readFileSync(TARBALL)
+  const sums = `${sha256(bytes.toString('base64'))}  car-runtime-${VERSION}.tgz`
   writeFileSync(join(DIST, 'SHA256SUMS'), sums + '\n')
-  record(stage, 'G-11 制品校验和（SHA-256）', true, `${tarName} (${bytes.length} bytes) → SHA256SUMS`)
+  record(stage, 'G-11 制品校验和（SHA-256）', true, `car-runtime-${VERSION}.tgz (${bytes.length} bytes) → SHA256SUMS`)
+}
+
+// ── 阶段 6b：cosign 本地实签 + 验签（G-08，keypair 模式；CI 正式发布切换 keyless OIDC）──
+{
+  const stage = 'S6b-cosign签名'
+  const cosignBin = process.env.COSIGN_BIN ?? 'D:/WorkBuddy/agent/tools/bin/cosign.exe'
+  const keysDir = 'D:/WorkBuddy/agent/tools/cosign-keys'
+  const sigConfig = join(keysDir, 'no-tlog.json')
+  const bundle = join(DIST, `car-runtime-${VERSION}.tgz.sig.bundle`)
+  const env = { ...process.env, COSIGN_PASSWORD: readFileSync(join(keysDir, 'car-release.password'), 'utf-8').trim() }
+  execFileSync(cosignBin, ['sign-blob', '--key', join(keysDir, 'car-release.key'),
+    '--signing-config', sigConfig, '--bundle', bundle, TARBALL], { env })
+  execFileSync(cosignBin, ['verify-blob', '--key', join(keysDir, 'car-release.pub'),
+    '--insecure-ignore-tlog', '--bundle', bundle, TARBALL], { env })
+  record(stage, 'G-08 cosign 签名', existsSync(bundle), `本地 keypair 实签+验签 PASS（no-tlog 模式，bundle: car-runtime-${VERSION}.tgz.sig.bundle）；正式发布可在 CI 切 keyless OIDC + Rekor`)
 }
 
 // ── 阶段 7：dist-tag 晋级模拟 + 回滚演练（发布渠道语义）──
