@@ -1,6 +1,6 @@
 {
   "name": "@car/runtime",
-  "version": "0.3.0",
+  "version": "1.0.0-rc.1",
   "description": "Composable Agent Runtime - S1 skeleton (kernel F1/F9 + session log F2/N1)",
   "license": "MIT",
   "type": "module",
@@ -10,9 +10,6 @@
   "scripts": {
     "test": "node --experimental-transform-types --test test/",
     "typecheck": "tsc --noEmit -p tsconfig.json"
-  },
-  "dependencies": {
-    "koffi": "^3.2.1"
   },
   "optionalDependencies": {
     "koffi": "^3.2.1"

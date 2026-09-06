@@ -1,7 +1,7 @@
 {
   "bomFormat": "CAR-SBOM",
   "specVersion": "0.1",
-  "version": "0.3.0",
+  "version": "1.0.0-rc.1",
   "components": [
     {
       "type": "file",
@@ -136,12 +136,12 @@
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/package.json",
-      "sha256": "efa7035e1b4447fa2c64eabc935b7560f3d0869a576e13b22db58a988945ce75"
+      "sha256": "84a6ae8313a163082caac2192740c2a607ad9b15aff07f1ae033c2f9b6430cb7"
     },
     {
       "type": "file",
       "path": "D:/WorkBuddy/agent/car-runtime/README.md",
-      "sha256": "0edd1fad302f92e79e5dda0523fa612fcc5322f89268635f757095d842290da6"
+      "sha256": "19650457a6d2fb9858708bd58723902cb6ad05090447098f617866b106758460"
     }
   ],
   "runtimeDependencies": []

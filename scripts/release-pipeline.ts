@@ -79,9 +79,9 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
   }
   writeFileSync(join(DIST, 'sbom.json'), JSON.stringify(sbom, null, 2))
   record(stage, 'G-05 SBOM 生成', true, `${files.length} 个组件（运行时依赖 0 项）`)
-  // 版本一致性：package.json 精确 semver 且与 dist-tag 目标一致
-  const ok = /^\d+\.\d+\.\d+$/.test(VERSION)
-  record(stage, 'G-06 版本一致性', ok, `version=${VERSION}（精确 semver，npm 不可变语义：禁止覆盖已发布版本）`)
+  // 版本一致性：精确 semver（含 prerelease——1.0-rc.x 是 rc 渠道合法形态；禁止 build 元数据与 loose 版本）
+  const ok = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(VERSION) && !/\+/.test(VERSION)
+  record(stage, 'G-06 版本一致性', ok, `version=${VERSION}（精确 semver 含 prerelease——rc 渠道合法形态；npm 不可变语义：禁止覆盖已发布版本）`)
 }
 
 // ── 阶段 3：沙箱逃逸回归（Linux 门禁，本机 DRY-RUN）──
