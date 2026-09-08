@@ -111,10 +111,28 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
 
 // ── 阶段 4-5：provenance 与远端归档（远端依赖，DRY-RUN）──
 // G-08 cosign 签名已移至 S6 之后本地实签（见 S6b）
+// G-10：REMOTE_CHECK=1 且具备 GH_TOKEN 时实查 Release 资产齐备性，否则 DRY-RUN
 {
   const stage = 'S4-provenance与远端归档'
-  record(stage, 'G-09 npm provenance（OIDC 可信发布）', true, '需 npm publish 通道（远端）', true)
-  record(stage, 'G-10 GitHub Releases 归档（napi 二进制+SBOM+校验和）', true, '需远端仓库（远端）', true)
+  let g10Ok = false
+  let g10Detail = '需远端仓库（远端）'
+  let g10Dry = true
+  if (process.env.GH_TOKEN && process.env.REMOTE_CHECK === '1') {
+    try {
+      const ghBin = 'D:/WorkBuddy/agent/tools/bin/gh.exe'
+      const out = execFileSync(ghBin, ['api', `repos/lqc624/car-runtime/releases/tags/v${VERSION}`, '--jq', '.assets[].name'], { encoding: 'utf-8', env: process.env })
+      const assets = out.trim().split('\n').filter(Boolean)
+      const need = [`car-runtime-${VERSION}.tgz`, `car-runtime-${VERSION}.tgz.sig.bundle`, 'SHA256SUMS', 'sbom.json', 'release-audit.jsonl', 'car-release.pub']
+      const missing = need.filter(n => !assets.includes(n))
+      g10Ok = missing.length === 0
+      g10Dry = false
+      g10Detail = g10Ok
+        ? `Release v${VERSION} 归档齐备（${assets.length} assets：tgz+签名bundle+SHA256SUMS+SBOM+审计+公钥）`
+        : `Release 资产缺失：${missing.join(', ')}`
+    } catch { /* 远端不可达或 Release 不存在 → 保持 DRY-RUN */ }
+  }
+  record(stage, 'G-10 GitHub Releases 归档（napi 二进制+SBOM+校验和）', g10Ok, g10Detail, g10Dry)
+  record(stage, 'G-09 npm provenance（OIDC 可信发布）', true, '需 npm publish 通道（远端，等 npm granular token）', true)
 }
 
 // ── 阶段 6：本地制品封装 + 校验和 ──
