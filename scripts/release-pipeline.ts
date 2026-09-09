@@ -132,7 +132,26 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
     } catch { /* 远端不可达或 Release 不存在 → 保持 DRY-RUN */ }
   }
   record(stage, 'G-10 GitHub Releases 归档（napi 二进制+SBOM+校验和）', g10Ok, g10Detail, g10Dry)
-  record(stage, 'G-09 npm provenance（OIDC 可信发布）', true, '需 npm publish 通道（远端，等 npm granular token）', true)
+  // G-09：REMOTE_CHECK=1 时实查 npm registry——版本在架 + rc tag + provenance 证明
+  let g9Ok = false
+  let g9Detail = '需 npm publish 通道（远端）'
+  let g9Dry = true
+  if (process.env.REMOTE_CHECK === '1') {
+    try {
+      const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+      const view = execFileSync(npmBin, ['view', '@lqc123qwe/car-runtime', 'version', 'dist-tags.rc', 'dist.attestations.provenance.predicateType', '--json'], { encoding: 'utf-8', shell: process.platform === 'win32' })
+      const j = JSON.parse(view)
+      const onRegistry = j.version === VERSION
+      const tagRc = j['dist-tags.rc'] === VERSION
+      const provenance = typeof j['dist.attestations.provenance.predicateType'] === 'string' && j['dist.attestations.provenance.predicateType'].includes('slsa.dev/provenance')
+      g9Ok = onRegistry && tagRc && provenance
+      g9Dry = false
+      g9Detail = g9Ok
+        ? `npm 在架 @lqc123qwe/car-runtime@${VERSION}（rc tag ✓ + SLSA provenance ✓，Actions OIDC 可信发布）`
+        : `registry 不满足：version=${j.version} rc=${j['dist-tags.rc']} provenance=${j['dist.attestations.provenance.predicateType'] ?? '无'}`
+    } catch { /* registry 不可达或包未发布 → 保持 DRY-RUN */ }
+  }
+  record(stage, 'G-09 npm provenance（OIDC 可信发布）', g9Ok, g9Detail, g9Dry)
 }
 
 // ── 阶段 6：本地制品封装 + 校验和 ──
