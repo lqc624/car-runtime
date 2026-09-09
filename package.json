@@ -1,11 +1,19 @@
 {
-  "name": "@car/runtime",
+  "name": "@lqc123qwe/car-runtime",
   "version": "1.0.0-rc.1",
-  "description": "Composable Agent Runtime - S1 skeleton (kernel F1/F9 + session log F2/N1)",
+  "description": "Composable Agent Runtime (CAR) - microkernel plugin system with sandboxed PTC, append-only hashed session log, and MCP host bridge",
   "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lqc624/car-runtime.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
     "test": "node --experimental-transform-types --test test/",
