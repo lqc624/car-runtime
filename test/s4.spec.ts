@@ -79,7 +79,7 @@ test('E2E：五环节全链路（装配→运行→收口→落盘→回放+MCP 
     // —— 环节 3：停止收口（F5/ADR-001）——
     const probe = await probeCapabilities()
     const sandbox = new SandboxExecutor({ probe, audit: () => {}, workspace: dir })
-    assert.equal(sandbox.degraded, process.platform !== 'linux') // Windows 开发态必然降级
+    assert.equal(sandbox.degraded, probe.degraded) // 执行器必须忠实反映探测结论：Windows/裸 CI 必降级，Linux+landlock-run 全执法
     const exec = await sandbox.exec({ argv: ['node', '-e', 'console.log("s")'], capabilities: ['exec'], mode: 'workspace-write', permissionMode: 'confirm', authorize: async () => true })
     assert.equal(exec.ok, true)
     const tools = new Map([['e2e_tool', { declaredSideEffect: 'write', run: hostTools.find(t => t.name === 'e2e_tool')!.run } as any]])
