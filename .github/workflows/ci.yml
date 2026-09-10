@@ -12,7 +12,7 @@ jobs:
       # S3 追加门禁：沙箱逃逸回归矩阵（tests/sandbox-escape）+ 密钥扫描 + 依赖审计
 
   # M5-S26（DEC-2 裁决接入）：Windows 四判据门禁——受限 token + Job Object 沙箱 spike，
-  # 脚本退出码直连（任一判据 FAIL/SKIP 即非零）。1.0-GO-2 判据 1+2 / 1.0-GO-3 判据 3 的远端复核。
+  # 脚本退出码直连（FAIL 即非零）。1.0-GO-2 判据 1+2 / 1.0-GO-3 判据 3 的远端复核。
   win32-spike:
     runs-on: windows-latest
     steps:
@@ -20,4 +20,6 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '22.19' }
       - run: npm install
+      - name: FFI debug matrix (diagnostic, S26 0xC0000142 排查)
+        run: node --experimental-transform-types scripts/win32-ffi-debug.ts
       - run: node --experimental-transform-types scripts/win32-koffi-spike.ts

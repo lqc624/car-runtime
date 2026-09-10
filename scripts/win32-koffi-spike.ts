@@ -439,7 +439,9 @@ function printReport() {
     : `SPIKE-INCOMPLETE: ${criteria.filter((c) => c.status !== 'PASS').map((c) => `判据${c.id}=${c.status}`).join(', ')}`
   console.log('')
   console.log(`VERDICT: ${verdict}`)
-  if (!allPass) process.exitCode = 1 // CI 门禁直连：任一判据 FAIL/SKIP/PENDING 即非零退出
+  // 退出码语义：FAIL=1（真失败，CI 门禁拦截）；PASS/SKIP=0（SKIP=环境不支持，
+  // ubuntu 测试门禁依赖 SKIP 正常退出；windows runner 上 koffi 随 optionalDependencies 必装）
+  if (criteria.some((c) => c.status === 'FAIL')) process.exitCode = 1
 }
 
 main().catch((e) => { console.error('FATAL:', e instanceof Error ? e.message : e); process.exitCode = 1 })
