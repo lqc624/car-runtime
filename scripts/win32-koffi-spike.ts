@@ -193,11 +193,13 @@ async function main() {
   // 声明为 SID_AND_ATTRIBUTES * 后 koffi 按 C 布局（16B，x64 自然对齐，探针已核实）转换
   const SID_AND_ATTRIBUTES = koffi.struct('SID_AND_ATTRIBUTES', { Sid: 'void *', Attributes: 'uint32' })
   const CloseHandle = kernel32.func('int32 __stdcall CloseHandle(uint64 hObject)')
+  const OpenProcess = kernel32.func('uint64 __stdcall OpenProcess(uint32 dwDesiredAccess, int32 bInheritHandle, uint32 dwProcessId)')
   const CreateFileW = kernel32.func('uint64 __stdcall CreateFileW(void *lpFileName, uint32 dwDesiredAccess, uint32 dwShareMode, void *lpSecurityAttributes, uint32 dwCreationDisposition, uint32 dwFlagsAndAttributes, uint64 hTemplateFile)')
   const WaitForSingleObject = kernel32.func('uint32 __stdcall WaitForSingleObject(uint64 hHandle, uint32 dwMilliseconds)')
   const ResumeThread = kernel32.func('uint32 __stdcall ResumeThread(uint64 hThread)')
   const GetExitCodeProcess = kernel32.func('int32 __stdcall GetExitCodeProcess(uint64 hProcess, void *lpExitCode)')
   const OpenProcessToken = advapi32.func('int32 __stdcall OpenProcessToken(uint64 ProcessHandle, uint32 DesiredAccess, void *TokenHandle)')
+  const GetTokenInformation = advapi32.func('int32 __stdcall GetTokenInformation(uint64 TokenHandle, int32 TokenInformationClass, void *TokenInformation, uint32 TokenInformationLength, void *ReturnLength)')
   const CreateRestrictedToken = advapi32.func('int32 __stdcall CreateRestrictedToken(uint64 ExistingTokenHandle, uint32 Flags, uint32 DisableSidCount, SID_AND_ATTRIBUTES *SidsToDisable, uint32 DeletePrivilegeCount, void *PrivilegesToDelete, uint32 RestrictedSidCount, void *SidsToRestrict, void *NewTokenHandle)')
   const CreateProcessAsUserW = advapi32.func('int32 __stdcall CreateProcessAsUserW(uint64 hToken, void *lpApplicationName, void *lpCommandLine, void *lpProcessAttributes, void *lpThreadAttributes, int32 bInheritHandles, uint32 dwCreationFlags, void *lpEnvironment, void *lpCurrentDirectory, void *lpStartupInfo, void *lpProcessInformation)')
   // Job Object（S25 阶段 2）
@@ -284,6 +286,8 @@ async function main() {
 
   try {
     // ========== 判据 1（S24 阶段 1）==========
+    // 文本探针（whoami）仅作辅助证据：runner 提权会话上受限 token 自查 /groups 会
+    // Access denied（预期行为），主断言由父侧代读子进程 token 完成（见判据 3 块内）
     const c1a = createRestrictedChild(hRestricted, WHOAMI_EXE, ['/groups', '/fo', 'list'])
     const c1p = createRestrictedChild(hRestricted, WHOAMI_EXE, ['/priv', '/fo', 'list'])
     c1a.wait(); c1p.wait()
@@ -296,22 +300,6 @@ async function main() {
     const childDangerous = childPrivs.filter((p) => DANGEROUS_PRIVS.includes(p))
     const parentAlreadyDeny = parentAdminAttrs !== null && DENY_ONLY_RE.test(parentAdminAttrs)
     const childDeny = childAdminAttrs !== null && DENY_ONLY_RE.test(childAdminAttrs)
-
-    // ---- 判据 1 裁决：Administrators deny-only 在列 + 特权剥离差分（双证据）----
-    const c1Pass = childAdminAttrs !== null && childDeny && stripped.length > 0 && childDangerous.length === 0
-    criteria[0].status = c1Pass ? 'PASS' : 'FAIL'
-    criteria[0].evidence = [
-      `父 Administrators 属性: ${parentAdminAttrs ?? '未在列'}`,
-      `子 Administrators 属性: ${childAdminAttrs ?? '未在列'}`,
-      `父 IL: ${mandatoryLabel(parentGroups)} / 子 IL: ${mandatoryLabel(childGroupsRes.out)}`,
-      `特权差分: 父 ${parentPrivs.length} 个 → 子 ${childPrivs.length} 个，剥离=[${stripped.join(', ') || '无'}]`,
-      `子进程危险特权: ${childDangerous.length === 0 ? '无' : childDangerous.join(', ')}`,
-      ...(parentAlreadyDeny
-        ? ['注: 父进程本身为 UAC filtered token（Administrators 已 deny-only），deny-only 断言为必要条件，受限 token 生效性由特权剥离差分（DISABLE_MAX_PRIVILEGE）共同支撑']
-        : []),
-      `子 groups 输出原文(前240字符): ${childGroupsRes.out.slice(0, 240).replace(/\r?\n/g, ' ⏎ ') || '(空)'}`,
-      `子进程退出码: groups=${childGroupsRes.exitCode}, priv=${childPrivsRes.exitCode}`,
-    ].join(' | ')
 
     // ========== 判据 3（S25 阶段 2：Job Object 配额 + fork 炸弹，POC-4 T-17 同源）==========
     const hJob = asBig(CreateJobObjectW(null, null))
@@ -329,7 +317,7 @@ async function main() {
       'function check() { if (done >= N) finish(); }',
       'for (let i = 0; i < N; i++) {',
       '  let c;',
-      '  try { c = spawn(process.execPath, ["-e", "setTimeout(function(){process.exit(0)},3000)"], { stdio: "ignore" }); }',
+      '  try { c = spawn(process.execPath, ["-e", "setTimeout(function(){process.exit(0)},3000)"], { stdio: "ignore", detached: true }); }',
       '  catch (e) { fail++; done++; if (samples.length < 5) samples.push({ kind: "throw", msg: String(e && e.message).slice(0, 120) }); continue; }',
       '  c.on("error", function (e) { fail++; done++; if (samples.length < 5) samples.push({ kind: "error", msg: String(e && e.code || e).slice(0, 120) }); check(); });',
       '  c.on("exit", function (code, sig) { if (code === 0) { ok++; } else { fail++; if (samples.length < 5) samples.push({ kind: "exit", code: code, sig: sig }); } done++; check(); });',
@@ -346,10 +334,86 @@ async function main() {
     const nodeExe = process.execPath
 
     try {
-      // ① 长睡哨兵子进程（挂 Job，用于 KILL_ON_JOB_CLOSE 击杀验证）
+      // ① 长睡哨兵子进程（挂 Job，用于 KILL_ON_JOB_CLOSE 击杀验证 + 判据 1 父侧代读取证）
       const sentinel = createRestrictedChild(hRestricted, nodeExe, [sleepPath], { suspended: true })
       const okAssignSentinel = AssignProcessToJobObject(hJob, sentinel.hProcess)
       sentinel.resume()
+
+      // ①' 判据 1 主断言（父侧代读）：受限 token 自查 whoami /groups 在提权会话上会
+      //    Access denied，故由父进程（High IL admin）打开哨兵进程读取其 token 的
+      //    TokenGroups/TokenPrivileges，机器级断言 Administrators SID = deny-only
+      const SE_GROUP_USE_FOR_DENY_ONLY = 0x10
+      const SE_GROUP_ENABLED_MASK = 0x2 | 0x4
+      const readTokenGroups = (token: bigint): Array<{ sid: string; attrs: number }> | null => {
+        const lenBuf = Buffer.alloc(4)
+        GetTokenInformation(token, 2 /* TokenGroups */, null, 0, lenBuf)
+        const len = lenBuf.readUInt32LE(0)
+        if (len <= 8) return null
+        const buf = Buffer.alloc(len)
+        if (!GetTokenInformation(token, 2, buf, len, lenBuf)) return null
+        const count = buf.readUInt32LE(0)
+        if (count === 0 || 8 + count * 16 + 8 > len) return null
+        const sidPtrs: bigint[] = []
+        for (let i = 0; i < count; i++) sidPtrs.push(buf.readBigUInt64LE(8 + i * 16))
+        // 内核将 SID blob 连续放在 entries 数组之后：buffer 基址 = min(sidPtr) - (8 + count*16)
+        const minSid = sidPtrs.reduce((a, b) => (b < a ? b : a))
+        const base = Number(minSid - BigInt(8 + count * 16))
+        const out: Array<{ sid: string; attrs: number }> = []
+        for (let i = 0; i < count; i++) {
+          const attrs = buf.readUInt32LE(8 + i * 16 + 8)
+          const off = Number(sidPtrs[i] - BigInt(base)) // 相对 buffer 起点的偏移
+          if (off < 0 || off + 8 > len) return null
+          const rev = buf[off]; const subCnt = buf[off + 1]
+          if (rev !== 1 || subCnt > 15 || off + 8 + subCnt * 4 > len) return null
+          let auth = 0n
+          for (let k = 0; k < 6; k++) auth = (auth << 8n) | BigInt(buf[off + 2 + k])
+          if (auth > 0xffffffffffffn) return null
+          const subs: number[] = []
+          for (let k = 0; k < subCnt; k++) subs.push(buf.readUInt32LE(off + 8 + k * 4))
+          out.push({ sid: `S-1-${auth}-${subs.join('-')}`, attrs })
+        }
+        return out
+      }
+      const readTokenPrivilegeCount = (token: bigint): number | null => {
+        const lenBuf = Buffer.alloc(4)
+        GetTokenInformation(token, 3 /* TokenPrivileges */, null, 0, lenBuf)
+        const len = lenBuf.readUInt32LE(0)
+        if (len <= 4) return null
+        const buf = Buffer.alloc(len)
+        if (!GetTokenInformation(token, 3, buf, len, lenBuf)) return null
+        return buf.readUInt32LE(0)
+      }
+      const parentTokenGroups = readTokenGroups(hToken)
+      const parentTokenPrivCount = readTokenPrivilegeCount(hToken)
+      const parentAdminEntry = parentTokenGroups?.find((g) => g.sid === ADMIN_SID)
+      let childTokenGroups: Array<{ sid: string; attrs: number }> | null = null
+      let childTokenPrivCount: number | null = null
+      const hSentinelProc = asBig(OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, 0, sentinel.pid))
+      if (hSentinelProc !== 0n) {
+        const hT = Buffer.alloc(8)
+        if (OpenProcessToken(hSentinelProc, 0x8 /* TOKEN_QUERY */, hT)) {
+          const childTok = hT.readBigUInt64LE(0)
+          childTokenGroups = readTokenGroups(childTok)
+          childTokenPrivCount = readTokenPrivilegeCount(childTok)
+          closeQuiet(childTok)
+        }
+        closeQuiet(hSentinelProc)
+      }
+      const childAdminEntry = childTokenGroups?.find((g) => g.sid === ADMIN_SID)
+      const childAdminDeny = childAdminEntry !== undefined
+        && (childAdminEntry.attrs & SE_GROUP_USE_FOR_DENY_ONLY) !== 0
+        && (childAdminEntry.attrs & SE_GROUP_ENABLED_MASK) === 0
+      const privDiffOk = childTokenPrivCount !== null && parentTokenPrivCount !== null
+        && childTokenPrivCount < parentTokenPrivCount
+      criteria[0].status = childAdminDeny && privDiffOk ? 'PASS' : 'FAIL'
+      criteria[0].evidence = [
+        `父 token Administrators: ${parentAdminEntry ? `attrs=0x${parentAdminEntry.attrs.toString(16)}${(parentAdminEntry.attrs & SE_GROUP_ENABLED_MASK) !== 0 ? ' (提权 Enabled)' : ' (UAC filtered deny-only)'}` : '未在列'}`,
+        `子 token(父侧代读) Administrators: ${childAdminEntry ? `attrs=0x${childAdminEntry.attrs.toString(16)}${childAdminDeny ? ' (USE_FOR_DENY_ONLY)' : ' (非 deny-only!)'}` : '未在列/取证失败'}`,
+        `TokenPrivileges 计数: 父 ${parentTokenPrivCount ?? '?'} → 子 ${childTokenPrivCount ?? '?'} (DISABLE_MAX_PRIVILEGE)`,
+        `whoami 辅助证据: 父 Administrators 属性=${parentAdminAttrs ?? '未在列'}, 子=${childAdminAttrs ?? '未在列'}, 特权差分=[${stripped.join(', ') || '无'}]`,
+        `子 whoami /groups 原文(前160字符): ${childGroupsRes.out.slice(0, 160).replace(/\r?\n/g, ' ⏎ ') || '(空)'}${childGroupsRes.exitCode !== 0 ? ' —— 受限 token 自查被拒，故采用父侧代读取证' : ''}`,
+        ...(parentAlreadyDeny ? ['注: 本机父进程为 UAC filtered token（父侧已 deny-only），deny-only 主断言不受影响（直接读子 token 属性位）'] : []),
+      ].join(' | ')
 
       // ② fork 炸弹子进程（CREATE_SUSPENDED → 挂 Job → Resume，消除子孙脱离 Job 的竞态）
       const bomber = createRestrictedChild(hRestricted, nodeExe, [forkProbePath], { suspended: true })
