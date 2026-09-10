@@ -309,6 +309,7 @@ async function main() {
       ...(parentAlreadyDeny
         ? ['注: 父进程本身为 UAC filtered token（Administrators 已 deny-only），deny-only 断言为必要条件，受限 token 生效性由特权剥离差分（DISABLE_MAX_PRIVILEGE）共同支撑']
         : []),
+      `子 groups 输出原文(前240字符): ${childGroupsRes.out.slice(0, 240).replace(/\r?\n/g, ' ⏎ ') || '(空)'}`,
       `子进程退出码: groups=${childGroupsRes.exitCode}, priv=${childPrivsRes.exitCode}`,
     ].join(' | ')
 
@@ -323,14 +324,15 @@ async function main() {
       'const { spawn } = require("child_process");',
       'const N = 64;',
       'let ok = 0, fail = 0, done = 0;',
-      'function finish(extra) { console.log("FORK_RESULT " + JSON.stringify(Object.assign({ ok: ok, fail: fail }, extra || {}))); process.exit(0); }',
+      'const samples = [];',
+      'function finish(extra) { console.log("FORK_RESULT " + JSON.stringify(Object.assign({ ok: ok, fail: fail, samples: samples.slice(0, 5), mem: process.memoryUsage().rss }, extra || {}))); process.exit(0); }',
       'function check() { if (done >= N) finish(); }',
       'for (let i = 0; i < N; i++) {',
       '  let c;',
       '  try { c = spawn(process.execPath, ["-e", "setTimeout(function(){process.exit(0)},3000)"], { stdio: "ignore" }); }',
-      '  catch (e) { fail++; done++; continue; }',
-      '  c.on("error", function () { fail++; done++; check(); });',
-      '  c.on("exit", function (code) { if (code === 0) { ok++; } else { fail++; } done++; check(); });',
+      '  catch (e) { fail++; done++; if (samples.length < 5) samples.push({ kind: "throw", msg: String(e && e.message).slice(0, 120) }); continue; }',
+      '  c.on("error", function (e) { fail++; done++; if (samples.length < 5) samples.push({ kind: "error", msg: String(e && e.code || e).slice(0, 120) }); check(); });',
+      '  c.on("exit", function (code, sig) { if (code === 0) { ok++; } else { fail++; if (samples.length < 5) samples.push({ kind: "exit", code: code, sig: sig }); } done++; check(); });',
       '}',
       'setTimeout(function () { finish({ timeout: true }); }, 20000);',
     ].join('\n')
@@ -360,7 +362,7 @@ async function main() {
       // ③ 配额内等待 fork 炸弹结束（探针自限时 20s）
       const bomberWait = bomber.wait(90000)
       const forkLine = bomber.outText().split(/\r?\n/).find((l) => l.startsWith('FORK_RESULT'))
-      let fork: { ok?: number; fail?: number; timeout?: boolean } = {}
+      let fork: { ok?: number; fail?: number; timeout?: boolean; samples?: Array<Record<string, unknown>>; mem?: number } = {}
       try { fork = JSON.parse((forkLine ?? '').replace(/^FORK_RESULT\s+/, '') || '{}') } catch { /* 解析失败按空处理 */ }
 
       // ④ KILL_ON_JOB_CLOSE 击杀验证：确认哨兵仍在跑（2s 等待超时=活着），关 Job 句柄，哨兵须在 15s 内被终止
@@ -383,6 +385,7 @@ async function main() {
         `Job 限额: ProcessMemory=256MB + ActiveProcess=${JOB_ACTIVE_PROCESS_LIMIT} + KILL_ON_JOB_CLOSE（SetInformationJobObject=${okJobInfo ? 'OK' : 'FAIL'}）`,
         `fork 探针挂 Job: Assign=${okAssignBomber ? 'OK' : 'FAIL'}, IsProcessInJob=${bomberInJob}`,
         `fork 炸弹(64 并发): 成功=${fork.ok ?? '?'} 被拒=${fork.fail ?? '?'}${fork.timeout ? ' (探针超时截断)' : ''}`,
+        `fork 诊断: 探针RSS=${fork.mem ? Math.round(fork.mem / 1048576) + 'MB' : '?'} 失败样本=${JSON.stringify(fork.samples ?? [])}`,
         `KILL_ON_JOB_CLOSE: 哨兵存活确认=${sentinelAlive}, 关句柄后 ${killElapsedMs}ms 内被杀=${sentinelKilled}`,
         `父进程存活: ${parentAlive}`,
         ...(bomberWait === WAIT_TIMEOUT ? ['告警: fork 探针未在 90s 内退出'] : []),
