@@ -46,6 +46,7 @@ const TOKEN_QUERY = 0x0008
 const DISABLE_MAX_PRIVILEGE = 0x00000001
 const CREATE_NO_WINDOW = 0x08000000
 const CREATE_SUSPENDED = 0x00000004
+const CREATE_UNICODE_ENVIRONMENT = 0x00000400
 const WAIT_TIMEOUT = 0x00000102
 const STILL_ACTIVE = 259
 const PSEUDO_CURRENT_PROCESS = BigInt.asUintN(64, -1n) // GetCurrentProcess() 伪句柄
@@ -102,6 +103,18 @@ function buildExtendedLimitInfo(): Buffer {
   b.writeUInt32LE(JOB_ACTIVE_PROCESS_LIMIT, 40) // BasicLimitInformation.ActiveProcessLimit
   b.writeBigUInt64LE(BigInt(JOB_MEMORY_LIMIT_BYTES), 112) // ProcessMemoryLimit
   return b
+}
+
+// 显式 Unicode 环境块：CreateProcessAsUserW 传 NULL 环境时，受限子进程可能因缺
+// SystemRoot/SystemDrive 等关键变量而 0xC0000142（STATUS_DLL_INIT_FAILED）——
+// windows-2025 runner（提权上下文）实测踩坑，本机非提权交互环境不可复现
+function buildEnvBlock(): Buffer {
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v
+  if (env.SystemRoot === undefined) env.SystemRoot = SystemRoot
+  if (env.windir === undefined) env.windir = SystemRoot
+  if (env.SystemDrive === undefined) env.SystemDrive = 'C:'
+  return Buffer.from(Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\0') + '\0\0', 'utf16le')
 }
 
 // 输出解码：优先 UTF-8，含替换符则回退 GBK（zh-CN whoami 重定向输出走 OEM 代码页）
@@ -203,8 +216,8 @@ async function main() {
     const si = Buffer.alloc(104) // sizeof(STARTUPINFOW) x64
     si.writeUInt32LE(104, 0) // cb
     const pi = Buffer.alloc(24) // sizeof(PROCESS_INFORMATION) x64
-    const flags = CREATE_NO_WINDOW | (opts?.suspended ? CREATE_SUSPENDED : 0)
-    if (!CreateProcessAsUserW(hToken, null, cmdBuf, null, null, 0, flags, null, null, si, pi)) {
+    const flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | (opts?.suspended ? CREATE_SUSPENDED : 0)
+    if (!CreateProcessAsUserW(hToken, null, cmdBuf, null, null, 0, flags, buildEnvBlock(), null, si, pi)) {
       rmSync(dir, { recursive: true, force: true })
       throw new Error('CreateProcessAsUserW failed (rc=0)——可能缺 SeIncreaseQuotaPrivilege 或受宿主沙箱拦截')
     }

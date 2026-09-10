@@ -130,6 +130,7 @@ test('win32 spike: 脚本存在且 win32 外环境输出 SKIP（判据清单可�
   if (process.platform !== 'win32') {
     assert.ok(out.includes('SKIP: spike requires win32'))
   } else {
-    assert.ok(out.includes('SKIP: koffi not installed') || out.includes('READY'), '判据清单或 READY')
+    // M5-S26 起四判据自动断言整合，win32 上以 VERDICT 收口（四判据全 PASS 或逐条列明）
+    assert.ok(out.includes('VERDICT:'), '四判据报告以 VERDICT 收口')
   }
 })
