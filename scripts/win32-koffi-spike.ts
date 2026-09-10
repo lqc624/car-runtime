@@ -47,6 +47,7 @@ const DISABLE_MAX_PRIVILEGE = 0x00000001
 const CREATE_NO_WINDOW = 0x08000000
 const CREATE_SUSPENDED = 0x00000004
 const CREATE_UNICODE_ENVIRONMENT = 0x00000400
+const DETACHED_PROCESS = 0x00000008
 const WAIT_TIMEOUT = 0x00000102
 const STILL_ACTIVE = 259
 const PSEUDO_CURRENT_PROCESS = BigInt.asUintN(64, -1n) // GetCurrentProcess() 伪句柄
@@ -70,7 +71,6 @@ const DANGEROUS_PRIVS = [
 
 const SystemRoot = process.env.SystemRoot ?? 'C:\\Windows'
 const WHOAMI_EXE = path.join(SystemRoot, 'System32', 'whoami.exe')
-const CMD_EXE = path.join(SystemRoot, 'System32', 'cmd.exe')
 
 type CriterionStatus = 'PASS' | 'FAIL' | 'PENDING' | 'SKIP'
 interface Criterion { id: number; name: string; status: CriterionStatus; evidence: string }
@@ -193,6 +193,7 @@ async function main() {
   // 声明为 SID_AND_ATTRIBUTES * 后 koffi 按 C 布局（16B，x64 自然对齐，探针已核实）转换
   const SID_AND_ATTRIBUTES = koffi.struct('SID_AND_ATTRIBUTES', { Sid: 'void *', Attributes: 'uint32' })
   const CloseHandle = kernel32.func('int32 __stdcall CloseHandle(uint64 hObject)')
+  const CreateFileW = kernel32.func('uint64 __stdcall CreateFileW(void *lpFileName, uint32 dwDesiredAccess, uint32 dwShareMode, void *lpSecurityAttributes, uint32 dwCreationDisposition, uint32 dwFlagsAndAttributes, uint64 hTemplateFile)')
   const WaitForSingleObject = kernel32.func('uint32 __stdcall WaitForSingleObject(uint64 hHandle, uint32 dwMilliseconds)')
   const ResumeThread = kernel32.func('uint32 __stdcall ResumeThread(uint64 hThread)')
   const GetExitCodeProcess = kernel32.func('int32 __stdcall GetExitCodeProcess(uint64 hProcess, void *lpExitCode)')
@@ -206,18 +207,40 @@ async function main() {
   const IsProcessInJob = kernel32.func('int32 __stdcall IsProcessInJob(uint64 hProcess, uint64 hJob, void *pbResult)')
 
   const closeQuiet = (h: bigint) => { try { if (h !== 0n) CloseHandle(h) } catch { /* noop */ } }
+  // koffi uint64 返回值在安全整数范围内可能给 Number（>2^53 才给 BigInt），统一归一化为 BigInt
+  const asBig = (v: bigint | number): bigint => (typeof v === 'bigint' ? v : BigInt(Math.round(v)))
 
-  // ---- 受限子进程工厂（cmd /c 重定向落盘，规避句柄继承/控制台编码问题）----
+  // ---- 受限子进程工厂（无 cmd 中转：lpApplicationName 直指程序 + STARTF_USESTDHANDLES
+  //      文件句柄重定向，输出捕获内核级、无引号解析/无控制台依赖）----
   const createRestrictedChild = (hToken: bigint, program: string, args: string[], opts?: { suspended?: boolean }): RestrictedChild => {
     const dir = mkdtempSync(path.join(tmpdir(), 'car-spike-'))
     const outFile = path.join(dir, 'out.txt')
+    // 可继承句柄安全属性：SECURITY_ATTRIBUTES { nLength=24, lpSecurityDescriptor=NULL, bInheritHandle=TRUE }
+    const sa = Buffer.alloc(24)
+    sa.writeUInt32LE(24, 0)
+    sa.writeUInt32LE(1, 16)
+    const nameBuf = Buffer.from(outFile + '\0', 'utf16le')
+    const hFile = asBig(CreateFileW(nameBuf, 0x40000000 /* GENERIC_WRITE */, 0x1 /* FILE_SHARE_READ */, sa, 2 /* CREATE_ALWAYS */, 0x80 /* FILE_ATTRIBUTE_NORMAL */, 0n))
+    if (hFile === BigInt.asUintN(64, -1n)) {
+      rmSync(dir, { recursive: true, force: true })
+      throw new Error('CreateFileW failed for probe output file')
+    }
+    const appBuf = Buffer.from(program + '\0', 'utf16le')
     const q = (a: string) => (a.includes(' ') ? `"${a}"` : a)
-    const cmdBuf = Buffer.from(`${CMD_EXE} /c chcp 65001 >nul & "${program}" ${args.map(q).join(' ')} > "${outFile}" 2>&1\0`, 'utf16le')
+    const cmdBuf = Buffer.from(`"${program}" ${args.map(q).join(' ')}\0`, 'utf16le')
     const si = Buffer.alloc(104) // sizeof(STARTUPINFOW) x64
     si.writeUInt32LE(104, 0) // cb
+    si.writeUInt32LE(0x100, 60) // dwFlags = STARTF_USESTDHANDLES
+    si.writeBigUInt64LE(0n, 80) // hStdInput
+    si.writeBigUInt64LE(hFile, 88) // hStdOutput
+    si.writeBigUInt64LE(hFile, 96) // hStdError
     const pi = Buffer.alloc(24) // sizeof(PROCESS_INFORMATION) x64
-    const flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | (opts?.suspended ? CREATE_SUSPENDED : 0)
-    if (!CreateProcessAsUserW(hToken, null, cmdBuf, null, null, 0, flags, buildEnvBlock(), null, si, pi)) {
+    // DETACHED_PROCESS：不分配控制台。CREATE_NO_WINDOW 仍会 spawn conhost，
+    // windows-2025 提权会话上受限 token 控制台初始化失败 → 0xC0000142（FFI debug 矩阵实测）；
+    // 输出经 STARTF_USESTDHANDLES 落盘，无控制台需求
+    const flags = DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT | (opts?.suspended ? CREATE_SUSPENDED : 0)
+    if (!CreateProcessAsUserW(hToken, appBuf, cmdBuf, null, null, 1 /* bInheritHandles */, flags, buildEnvBlock(), null, si, pi)) {
+      closeQuiet(hFile)
       rmSync(dir, { recursive: true, force: true })
       throw new Error('CreateProcessAsUserW failed (rc=0)——可能缺 SeIncreaseQuotaPrivilege 或受宿主沙箱拦截')
     }
@@ -231,8 +254,8 @@ async function main() {
       resume: () => { ResumeThread(hThread) },
       wait: (ms = 60000) => WaitForSingleObject(hProcess, ms),
       exitCode: () => { GetExitCodeProcess(hProcess, codeBuf); return codeBuf.readUInt32LE(0) },
-      outText: () => (existsSync(outFile) ? readFileSync(outFile).toString('utf8') : ''),
-      cleanup: () => { closeQuiet(hThread); closeQuiet(hProcess); rmSync(dir, { recursive: true, force: true }) },
+      outText: () => (existsSync(outFile) ? decodeOutput(readFileSync(outFile)) : ''),
+      cleanup: () => { closeQuiet(hThread); closeQuiet(hProcess); closeQuiet(hFile); rmSync(dir, { recursive: true, force: true }) },
     }
   }
 
@@ -290,7 +313,7 @@ async function main() {
     ].join(' | ')
 
     // ========== 判据 3（S25 阶段 2：Job Object 配额 + fork 炸弹，POC-4 T-17 同源）==========
-    const hJob = CreateJobObjectW(null, null)
+    const hJob = asBig(CreateJobObjectW(null, null))
     if (hJob === 0n) throw new Error('CreateJobObjectW failed (returned NULL)')
     const okJobInfo = SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, buildExtendedLimitInfo(), 144)
     if (!okJobInfo) throw new Error('SetInformationJobObject failed (rc=0)——检查 JOBOBJECT_EXTENDED_LIMIT_INFORMATION 布局（期望 144B）')
@@ -444,4 +467,4 @@ function printReport() {
   if (criteria.some((c) => c.status === 'FAIL')) process.exitCode = 1
 }
 
-main().catch((e) => { console.error('FATAL:', e instanceof Error ? e.message : e); process.exitCode = 1 })
+main().catch((e) => { console.error('FATAL:', e instanceof Error ? `${e.message}\n${e.stack}` : e); process.exitCode = 1 })
