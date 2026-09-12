@@ -60,6 +60,8 @@ export interface McpToolDefinition {
   description?: string
   /** 未声明按 write 最高约束（T-22：安全默认） */
   declaredSideEffect?: 'readonly' | 'write'
+  /** 工具入参 JSON Schema（MCP tools/list 原样捕获，M5 DEC-4 深度参数渲染消费源） */
+  inputSchema?: unknown
 }
 
 export class McpGateway {
@@ -77,12 +79,13 @@ export class McpGateway {
     if (cred) throw new Error(`CAR-E-MCP: ${cred}`)
     this.#servers.set(cfg.serverId, cfg)
     const res = await cfg.transport.send({ jsonrpc: '2.0', id: this.#nextId++, method: 'tools/list' })
-    const tools = (res.result as { tools: Array<{ name: string; description?: string; sideEffect?: 'readonly' | 'write' }> }).tools
+    const tools = (res.result as { tools: Array<{ name: string; description?: string; sideEffect?: 'readonly' | 'write'; inputSchema?: unknown }> }).tools
     for (const t of tools) {
       // T-22：未声明 sideEffect 按 write 最高约束收敛（安全默认，注册时强制）
       this.#tools.set(`${cfg.serverId}:${t.name}`, {
         serverId: cfg.serverId, name: t.name, description: t.description,
         declaredSideEffect: t.sideEffect ?? 'write',
+        inputSchema: t.inputSchema,
       })
     }
     return [...this.#tools.values()].filter(t => t.serverId === cfg.serverId)
