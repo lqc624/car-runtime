@@ -69,10 +69,10 @@ test('T-1: 登记制——未登记 host 拒绝（A050001）+ 重复登记报错
   assert.throws(() => gw.registerHost({ hostId: 'claude-code', profile: HOST_MAPPINGS[0], transport: {} as never }), /already registered/)
 })
 
-test('T-1: 9 tool 面固定 + 未知 tool 拒绝（step 循环不暴露）', async () => {
+test('T-1: 10 tool 面固定 + 未知 tool 拒绝（step 循环不暴露）', async () => {
   const gw = new HostGateway({ facade: mockFacade(), audit: () => {} })
   assert.deepEqual(gw.listTools().sort(), [...HOST_TOOLS].sort())
-  assert.equal(HOST_TOOLS.length, 9)
+  assert.equal(HOST_TOOLS.length, 10)
   gw.registerHost({ hostId: 'claude-code', profile: HOST_MAPPINGS[0], transport: {} as never })
   const r = await gw.handle('claude-code', 'run_step', {})
   assert.equal(r.ok, false)

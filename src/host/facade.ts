@@ -9,11 +9,22 @@
  *  - 会话内存态 Map 承载（v0.2.0 SessionLog 语义），持久化经 sessionExport（取证包）与后续 S13 文件落盘增强。
  */
 import { SessionLog, type EventKind } from '../session/log.ts'
+import { forkCrossHost, loadForkedLog } from '../session/fork.ts'
 import { deriveSessionId, normalizeHostEvent } from './mappings.ts'
 import type { HostProfile } from './mappings.ts'
 import type { RuntimeFacade } from './hostGateway.ts'
 
 interface SessionState { log: SessionLog; profile: HostProfile; hostSessionId: string; turnCount: number; lastReason: string }
+
+/** 迁移事件里已用过的最大 turn 序号（T{n}）——import 侧续跑 turnId 不与迁移段冲突 */
+function maxTurnIndex(log: SessionLog): number {
+  let max = 0
+  for (const e of log.events) {
+    const m = /^T(\d+)$/.exec(e.turnId)
+    if (m) max = Math.max(max, Number(m[1]))
+  }
+  return max
+}
 
 export function createRuntimeFacade(opts: { profiles: Map<string, HostProfile> }): RuntimeFacade {
   const sessions = new Map<string, SessionState>()
@@ -26,16 +37,31 @@ export function createRuntimeFacade(opts: { profiles: Map<string, HostProfile> }
 
   return {
     async sessionStart(args) {
-      const { hostSessionId } = args as { hostSessionId: string; __hostId?: string }
+      const { hostSessionId, importJsonl } = args as { hostSessionId: string; importJsonl?: string; __hostId?: string }
       const hostId = (args as { __hostId?: string }).__hostId as string
       const profile = opts.profiles.get(hostId)
       if (!profile) throw new Error('CAR-A050001: host profile not registered')
       const sessionId = deriveSessionId(hostId, hostSessionId)
       if (sessions.has(sessionId)) return { sessionId } // 幂等：同一宿主会话重复 start 返回同一 CAR 会话
+      // M5-DEC4：fork 工件导入（跨宿主 resume）——归属校验（target 必须命中本宿主）+ 断链拒绝
+      if (importJsonl !== undefined) {
+        const { log } = loadForkedLog(importJsonl, { hostId, hostSessionId })
+        const turnCount = maxTurnIndex(log)
+        sessions.set(sessionId, { log, profile, hostSessionId, turnCount, lastReason: 'completed' })
+        return { sessionId }
+      }
       const log = new SessionLog(sessionId)
       log.append('runtime', 'hostRaw', 'T0', { hostEvent: 'session_registered', hostId, hostSessionId })
       sessions.set(sessionId, { log, profile, hostSessionId, turnCount: 0, lastReason: 'completed' })
       return { sessionId }
+    },
+
+    // M5-DEC4 转正：跨宿主 fork——源会话链逐字节迁移 + fork 标记落链，产出可迁移 JSONL 工件
+    async sessionFork({ sessionId, targetHostId, targetHostSessionId, upToSeq }) {
+      const s = bySession(sessionId)
+      if (!opts.profiles.has(targetHostId)) throw new Error(`CAR-A050001: target host "${targetHostId}" not registered（目标宿主须登记）`)
+      const fork = forkCrossHost(s.log, { hostId: targetHostId, hostSessionId: targetHostSessionId }, { upToSeq })
+      return { sessionId: fork.sessionId, jsonl: fork.jsonl, migrated: fork.migrated }
     },
 
     async sessionTurn({ sessionId, input }) {

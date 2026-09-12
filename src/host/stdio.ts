@@ -3,7 +3,7 @@
  *
  * 口径（M3系统设计增补 T-1 / M3部署设计增补 §4 多宿主拓扑：stdio 为 M3 主形态）：
  *  - 换行分隔 JSON-RPC 2.0（与 M1 client 侧 gateway 同帧格式）；
- *  - 方法面：initialize/notifications 握手（MCP 协议兼容）+ tools/list（9 tool 能力发现）+ tools/call（分发到 HostGateway.handle）；
+ *  - 方法面：initialize/notifications 握手（MCP 协议兼容）+ tools/list（10 tool 能力发现）+ tools/call（分发到 HostGateway.handle）；
  *  - 所有到达请求与响应均经 HostGateway 审计（无旁路）；未登记宿主在 handle 层拒绝；
  *  - stdin 结束（宿主退出）→ 通道关闭，进程内状态由审计日志承载（BD-02 等价：不静默丢数据）。
  */

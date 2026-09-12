@@ -21,7 +21,7 @@ function setup() {
 
 // ==================== stdio ServerTransport（JSON-RPC over 换行分隔 JSON） ====================
 
-test('S12: stdio——tools/list 返回 9 tool 面；tools/call 分发到 HostGateway', async () => {
+test('S12: stdio——tools/list 返回 10 tool 面；tools/call 分发到 HostGateway', async () => {
   const { gw } = setup()
   const server = createStdioServer((tool, args) => gw.handle('claude-code', tool, args))
   const input = new PassThrough()
@@ -36,7 +36,7 @@ test('S12: stdio——tools/list 返回 9 tool 面；tools/call 分发到 HostGa
   await new Promise(r => setImmediate(r))
   assert.equal(lines.length, 2)
   const list = JSON.parse(lines[0])
-  assert.equal(list.result.tools.length, 9)
+  assert.equal(list.result.tools.length, 10)
   const call = JSON.parse(lines[1])
   assert.match(call.result.content[0].text, /"sessionId":"SH-/)
 })

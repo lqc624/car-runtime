@@ -28,7 +28,7 @@ test('S18: mcp-serve 真实进程——tools/list + session_start + turn + verif
     JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'session_start', arguments: { hostSessionId: 'cc-e2e' } } }),
   ])
-  assert.equal(outs[0].result.tools.length, 9)
+  assert.equal(outs[0].result.tools.length, 10)
   const sid = JSON.parse(outs[1].result.content[0].text).sessionId
   assert.match(sid, /^SH-[0-9a-f]{24}$/)
 

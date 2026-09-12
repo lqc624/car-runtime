@@ -2,8 +2,9 @@
  * T-1 · HostGateway（M3-S11 骨架）：CAR-as-MCP-Server 接入面
  *
  * 口径（M3系统设计增补 T-1 / 决议⑤ MCP 统一边界双宿主等价）：
- *  - 9 tool 粗粒度会话级能力 + 工具面透传：session_start/turn/stop/status/replay/verify/export
+ *  - 10 tool 粗粒度会话级能力 + 工具面透传：session_start/turn/stop/status/replay/verify/export/fork
  *    + tool_list/tool_call——step 循环不暴露（「统一边界而非统一内部」）；
+ *    session_fork 为 M5 DEC-4 转正项（跨宿主 fork/resume，M3 §1.7 显式延后 → 1.0 纳入）；
  *  - hostId 登记制（A050001 语义扩展）：未登记宿主拒绝连接；
  *  - ServerTransport 对偶（gateway.ts）：宿主作为 MCP client 经 tools/call 调用；
  *  - tool handlers 由注入的 RuntimeFacade 提供（S12 接线 Claude Code、S13 Codex + 契约测试）；
@@ -14,18 +15,20 @@ import { deriveSessionId, normalizeHostEvent, type HostProfile } from './mapping
 
 export const HOST_TOOLS = [
   'session_start', 'session_turn', 'session_stop', 'session_status',
-  'session_replay', 'session_verify', 'session_export', 'tool_list', 'tool_call',
+  'session_replay', 'session_verify', 'session_export', 'session_fork', 'tool_list', 'tool_call',
 ] as const
 export type HostTool = (typeof HOST_TOOLS)[number]
 
 export interface RuntimeFacade {
-  sessionStart(args: { hostSessionId: string }): Promise<{ sessionId: string }>
+  sessionStart(args: { hostSessionId: string; /** M5-DEC4：fork 工件导入（跨宿主 resume 入口），缺省为普通 start */ importJsonl?: string }): Promise<{ sessionId: string }>
   sessionTurn(args: { sessionId: string; input: unknown }): Promise<{ reason: string; steps: number }>
   sessionStop(args: { sessionId: string }): Promise<{ reason: string }>
   sessionStatus(args: { sessionId: string }): Promise<{ state: string; lastReason?: string }>
   sessionReplay(args: { sessionId: string }): Promise<{ messages: unknown[] }>
   sessionVerify(args: { sessionId: string }): Promise<{ ok: boolean; brokenAt: number | null }>
   sessionExport(args: { sessionId: string }): Promise<{ bundle: unknown }>
+  /** M5-DEC4 转正：跨宿主 fork（宿主 A 侧调用，产出可迁移工件 + 宿主 B 侧确定性会话 id） */
+  sessionFork(args: { sessionId: string; targetHostId: string; targetHostSessionId: string; upToSeq?: number }): Promise<{ sessionId: string; jsonl: string; migrated: number }>
   toolList(args: Record<string, never>): Promise<{ tools: string[] }>
   toolCall(args: { sessionId: string; tool: string; arguments?: Record<string, unknown> }): Promise<{ ok: boolean; result?: unknown; error?: string }>
 }
@@ -61,7 +64,7 @@ export class HostGateway {
       return { ok: false, error: 'CAR-A050001: unregistered host connection rejected（登记制）' }
     }
     if (!(HOST_TOOLS as readonly string[]).includes(tool)) {
-      return { ok: false, error: `unknown host tool "${tool}"（9 tool 面，step 循环不暴露）` }
+      return { ok: false, error: `unknown host tool "${tool}"（10 tool 面，step 循环不暴露）` }
     }
     // tool 名（snake_case MCP 约定）→ facade 方法（camelCase TS 约定）
     const camel = tool.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())

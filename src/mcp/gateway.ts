@@ -32,7 +32,7 @@ export type McpTransport = ClientTransport
  * 与 ClientTransport 语义对偶：CAR 不主动 send，仅响应 method 调用。
  */
 export interface ServerTransport {
-  /** 宿主到达的 JSON-RPC 方法调用（由 HostGateway 分发到 9 tool 注册表） */
+  /** 宿主到达的 JSON-RPC 方法调用（由 HostGateway 分发到 10 tool 注册表） */
   onRequest(method: string, params: unknown): Promise<JsonRpcResponse>
   alive(): boolean
   close(): void

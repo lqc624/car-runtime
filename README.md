@@ -68,8 +68,8 @@ node --experimental-transform-types --test test/*.spec.ts
 | `test/s9.spec.ts` | 5 项断言（配置树/产消图/取证包/篡改拒绝/三标分层） | F14/F15/D-4 |
 
 | `src/host/mappings.ts` | S11 T-1 归一化 schema（host-mappings-v1）：session id 确定性派生（SH-+sha256）+ 两宿主纯数据 profile + hostRaw 零静默降级通道 | 决议⑤、T-1 |
-| `src/host/hostGateway.ts` | S11 HostGateway 骨架：9 tool 会话级能力面（step 循环不暴露）+ hostId 登记制（A050001）+ RuntimeFacade 分发（snake→camel）+ 审计全留痕 | M3系统设计增补 T-1 |
-| `test/s11.spec.ts` | 10 项断言（幂等派生/跨宿主隔离/归一化等价/降级留痕/登记制/9 tool 面/契约测试 v0/宿主标识静态断言） | 双宿主等价基线 |
+| `src/host/hostGateway.ts` | S11 HostGateway 骨架：10 tool 会话级能力面（step 循环不暴露）+ hostId 登记制（A050001）+ RuntimeFacade 分发（snake→camel）+ 审计全留痕 | M3系统设计增补 T-1 |
+| `test/s11.spec.ts` | 10 项断言（幂等派生/跨宿主隔离/归一化等价/降级留痕/登记制/10 tool 面/契约测试 v0/宿主标识静态断言） | 双宿主等价基线 |
 
 ## 状态
 

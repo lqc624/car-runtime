@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
-export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；六值 TurnEndReason 不变
+export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' | 'fork' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；M5-DEC4 加法扩展：跨宿主 fork 标记事件；六值 TurnEndReason 不变
 export type Actor = 'user' | 'model' | 'plugin' | 'runtime'
 export interface SessionEvent {
   seq: number
@@ -99,21 +99,27 @@ export class SessionLog {
     return { events: this.events.length, snapshots: this.#snapshots.length, tailHash: this.#tail }
   }
 
+  /** 从已校验事件数组重建（恢复 #tail，续跑 append 不断链——跨宿主 fork/resume 装载入口） */
+  static fromEvents(sessionId: string, events: readonly SessionEvent[]): SessionLog {
+    const log = new SessionLog(sessionId)
+    ;(log.events as SessionEvent[]) = [...events]
+    const last = events[events.length - 1]
+    if (last) log.#tail = last.hash
+    return log
+  }
+
   /** 导出取证数据（MVP 基础导出：JSONL 全量 + 审计元数据；F15 完整包为 M2） */
   exportJSONL(): string {
     return this.events.map(e => JSON.stringify(e)).join('\n') + '\n'
   }
 }
 
-/** 从 JSONL 文件加载并校验哈希链（审计回放/跨机迁移入口；断链即拒绝装载） */
+/** 从 JSONL 文件加载并校验哈希链（审计回放/跨机迁移入口；断链即拒绝装载；#tail 恢复→装载后续跑不断链） */
 export function loadSessionLog(file: string): { log: SessionLog; brokenAt: number | null } {
-  const log = new SessionLog(file)
   const lines = readFileSync(file, 'utf-8').split('\n').filter(l => l.trim())
-  for (const line of lines) {
-    const e = JSON.parse(line) as SessionEvent
-    // 直接重建（绕过 append 的哈希计算），随后用 verifyChain 校验完整性
-    ;(log.events as SessionEvent[]).push(e)
-  }
+  const events = lines.map(l => JSON.parse(l) as SessionEvent)
+  // 事件原样重建（绕过 append 的哈希计算），随后用 verifyChain 校验完整性
+  const log = SessionLog.fromEvents(file, events)
   return { log, brokenAt: log.verifyChain() }
 }
 
