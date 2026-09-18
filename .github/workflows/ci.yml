@@ -230,12 +230,16 @@ jobs:
       - name: 步骤 1 · WSL 启用自检（内核缺失时 wsl --update 自愈；run 35312957963 教训）
         shell: pwsh
         run: |
-          wsl --status; if ($LASTEXITCODE -ne 0) { wsl --update --web-download; wsl --status }
+          wsl --status; if ($LASTEXITCODE -ne 0) { wsl --update --web-download }
+          # run 35315242805 教训：默认版本可能是 1（无内核翻译层，Landlock 不可用）——强制 WSL2
+          wsl --set-default-version 2; if ($LASTEXITCODE -ne 0) { wsl --update; wsl --set-default-version 2 }
+          wsl --status
       - name: 步骤 2 · Ubuntu 24.04 发行版导入（web-download 绕 Store；失败 = 环境失败 §2.1.3）
         shell: pwsh
         run: |
           wsl --install -d Ubuntu-24.04 --no-launch --web-download
-          wsl -d Ubuntu-24.04 -e true
+          wsl --set-version Ubuntu-24.04 2
+          wsl -d Ubuntu-24.04 -e uname -r
       - name: 步骤 3-5 · 环境自检 + 工作区迁移 ext4 + 20 条实跑
         shell: bash
         run: |
