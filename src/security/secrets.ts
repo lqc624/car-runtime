@@ -35,7 +35,7 @@ export const PATTERN_LIBRARY: SecretPattern[] = [
   { category: 'connection-string', name: 'redis', re: /redis:\/\/:[^@\s"']+@[^\s"']+/g },
   { category: 'connection-string', name: 'jdbc', re: /jdbc:[a-z0-9]+:\/\/[^:\s"']+:[^@\s"']+@/g },
   // ── 云凭据 ──
-  { category: 'cloud-credential', name: 'AWS Secret', re: /aws(.{0,20})?(secret|secretaccesskey)(.{0,10})?[':= ]+[A-Za-z0-9/+=]{40}/gi },
+  { category: 'cloud-credential', name: 'AWS Secret', re: /aws(.{0,20})?(?:secret[_-]?access[_-]?key|secret)(.{0,10})?['":= ]+[A-Za-z0-9/+=]{40}/gi },
   { category: 'cloud-credential', name: 'GCP service account', re: /"type":\s*"service_account"/g },
   { category: 'cloud-credential', name: 'Azure conn', re: /AccountKey=[A-Za-z0-9+/=]{60,}/g },
   { category: 'cloud-credential', name: 'JWT', re: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, keyHints: ['token', 'jwt'] },
@@ -60,6 +60,26 @@ export interface ScanHit { category: SecretCategory; name: string; start: number
 
 const ENTROPY_FLOOR = 3.5
 
+/** 已知占位/示例值（连接串口令降级用；仅 L3 减分，不提供总开关，红线 §6.3 不受影响） */
+const PLACEHOLDER_VALUES = new Set([
+  'password', 'changeme', 'example', 'demo', 'default', 'placeholder', 'sample',
+  'test', 'pass', 'secret', 'dummy', 'xxx', 'yourpassword', 'your_password', 'your-password',
+])
+
+/**
+ * E-5 校准：熵口径修正——kv 形命中的熵只算引号内 value；无引号时只算尾部值串。
+ * 根因（run 基准集 FPR 27.2%）：键名（password=/api_key= 等）自身多样性抬高了弱值的整体熵。
+ */
+function entropyTarget(token: string): string {
+  const quoted = /["']([^"']{1,256})["']/g
+  let last: string | null = null
+  let m: RegExpExecArray | null
+  while ((m = quoted.exec(token)) !== null) last = m[1]
+  if (last !== null && last.length >= 4) return last
+  const run = /([A-Za-z0-9+/=._-]{12,})$/.exec(token)
+  return run ? run[1] : token
+}
+
 function maskToken(t: string): string {
   if (t.length <= 8) return '*'.repeat(t.length)
   return t.slice(0, 4) + '****' + t.slice(-4)
@@ -77,12 +97,17 @@ export function scanSecrets(text: string, opts: { returnCandidates?: boolean } =
     let m: RegExpExecArray | null
     while ((m = p.re.exec(text)) !== null) {
       const token = m[0]
-      // L2 熵过滤：私钥块/连接串结构化模式豁免熵检查；其余需 ≥3.5
+      // L2 熵过滤：私钥块/连接串结构化模式豁免熵检查；其余需 ≥3.5（E-5 校准：熵算在 value 上）
       const structured = p.category === 'private-key' || p.category === 'connection-string' || (p.category === 'cloud-credential' && p.name === 'GCP service account')
-      const ent = shannonEntropy(token)
+      const ent = shannonEntropy(entropyTarget(token))
       if (!structured && ent < ENTROPY_FLOOR) continue
       // L3 上下文打分：L1 前缀 + L2 熵双过 = 高精度（基础 2）；上下文仅加成/降级
       let score = 2
+      // E-5 校准：连接串占位口令降级（postgres://user:password@ 类文档示例 → 仅候选不确认）
+      if (p.category === 'connection-string') {
+        const pm = /:\/\/(?:[^:/\s"']+)?:([^@\s"']+)@/.exec(token)
+        if (pm && PLACEHOLDER_VALUES.has(pm[1].toLowerCase())) score -= 2
+      }
       const before = text.slice(Math.max(0, m.index - 40), m.index).toLowerCase()
       if (p.keyHints?.some(h => before.includes(h.toLowerCase()))) score += 1
       if (/\b(const|let|var|return|echo|export)\b/.test(before)) score += 1 // 赋值/输出语境

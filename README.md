@@ -125,6 +125,7 @@ node --experimental-transform-types --test test/*.spec.ts
 
 - **CI 门禁矩阵落地（09-18）**：ci.yml 重写为 16 Job + release.yml=j16（18/18 对齐 M2§2.3+M3§2.2 全景）；新增 landlock-run 原生组件（构建单源 j01）、20 条逃逸矩阵用例（WSL2 实跑 20/20）、Verdaccio registry E2E（15/15）、N1 不变量 100 回放（含篡改检出防假绿）、secrets-scan/contract-check/package-check 脚本门禁、tsc strict 门禁（tsconfig 此前不存在——幽灵门禁同类项）。J-06 macOS 冻结态登记不设 Job。幽灵注释三项门禁全部兑现。
 - **CI 首跑全绿（09-18，run 35315943540）**：16/16 Job 在 GitHub Actions 实跑通过——三平台全量 179/179、j05 Linux 逃逸 20/20、**j17 WSL2 逃逸 20/20**（hosted windows-2022 + WSL2 Ubuntu-24.04 实装，E-1 常驻门禁判据兑现）、j07 win32 四判据、j18 registry E2E 全部转正式门禁。首跑排障四连修：CodeQL SARIF 403（补 security-events:write）、j05 artifact 丢执行位（chmod 恢复）、j17 /mnt 不可用（tar 流直灌 ext4）+ WSL1 缺 Landlock（强制 set-version 2）+ CRLF 脚本炸（.gitattributes eol=lf + sed 去 CR）。
+- **E-5 万级 secrets 基准集闭环（09-18，M2 退出标准 #4）**：确定性生成 1000 正（25 族）+ 9000 负（5 类对抗面）实测 **漏报 0% / FPR 0% / precision 100%**（D-3 判据 <1.5%/≤5%/≥80% 全过）。基准集首跑即校准出扫描器三处缺陷并修复：AWS Secret 正则对 `aws_secret_access_key` 规范形失配（漏报源）、kv 熵口径算在含键名全 token（弱值逃逸）、连接串占位口令无降级。载体：`test/s7b-baseline.spec.ts` 常驻回归 + `scripts/secrets-baseline.ts` 终验 CLI。180/180 全绿。
 
 - **M6 收口（2026-09-15）**：**179/179 全绿（s1–s20 166 + s21 13，零回归）**；QA 两轮制——Round 1 发现 M6-BUG-1（重名插件被 topo 误报 CAR-E-DEPCYCLE，register CAR-E-DUP 守卫不可达），工程师修复（topoSort 重名安全：pushed/pushedNames 双轨；register DUP 守卫恢复可达 + 全量同名文件冲突链）后 Round 2 PASS。CLI 实测 reload 退出码 0/1/2 ✅、CAR_OFFLINE=1 doctor 离线 PASS ✅。QS-05：20 轮缓存击穿热重载 × 5 插件 P95 个位数 ms（目标 ≤800ms）。
 - 口径备注：DUP 拦截点钉在 register 阶段（QA 裁定接受：文档口径 + 冲突链定位质量更优）；topoSort 仅对真实依赖环报 CAR-E-DEPCYCLE。
