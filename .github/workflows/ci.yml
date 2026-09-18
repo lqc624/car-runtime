@@ -228,7 +228,7 @@ jobs:
       - name: 步骤 1 · WSL 启用自检（内核缺失时 wsl --update 自愈；run 35312957963 教训）
         shell: pwsh
         run: |
-          if (-not (wsl --status)) { wsl --update --web-download; wsl --status }
+          wsl --status; if ($LASTEXITCODE -ne 0) { wsl --update --web-download; wsl --status }
       - name: 步骤 2 · Ubuntu 24.04 发行版导入（web-download 绕 Store；失败 = 环境失败 §2.1.3）
         shell: pwsh
         run: |
