@@ -107,16 +107,35 @@ node --experimental-transform-types --test test/*.spec.ts
 
 | `scripts/ptc-baseline/` | S19 T-7 评测脚本实装：12 任务五类 + 逐任务 N 次对照（非 PTC 基线）+ JSONL 明细/汇总——**首份实测：PTC 60/60=100% ≥ 非 PTC 100%，P1-4 ✅** | PRD P1-4 |
 
+| `src/ptc/schemaRender.ts` | M5 DEC-4①：JSON Schema→TS 深度参数渲染（const/enum 字面量、嵌套 object required/optional、数组/元组 prefixItems、additionalProperties、anyOf/oneOf/allOf；$ref/not/畸形/超深 fail-visible 落 unknown 带原因） | M3-S16 评估项转正 |
+| `src/session/fork.ts` | M5 DEC-4②：跨宿主 fork/resume——链逐字节迁移 + fork 标记落链（fromSessionId/target/upToSeq）+ 目标会话 id 确定性派生 + 断链拒绝 + 归属校验 + #tail 恢复续跑 | M3 §1.7 延后项转正 |
+| `test/s16.spec.ts` + `test/s19.spec.ts` | M5 断言：s16 深渲 10 项 + s19 fork 7 项（含双宿主 facade E2E） | 全量 156/156 |
+
+| `src/load/report.ts` + `src/dx/doctor.ts` | M6 DX 工具链：loadPlugins 五阶段编排（discover→parse→validate→topo→register，FAIL 短路 SKIPPED）+ LoadReportVO/renderLoadReport（§3.2.M6.3 逐字对齐）+ ReloadManager（epoch+1 击穿缓存 → invalidate 旧实例 → 重装配，FAIL 不静默回退）+ doctor 凭据/连通性（值不打印、离线 SKIPPED 不失败） | §3.2.M6、QS-05 |
+| `src/cli.ts` +2 | M6：car reload <file\|dir>（五阶段报告 + 退出码 0/1/2）+ doctor 增强（凭据/连通性） | §3.2.M6.2 |
+| `docs/plugin-authoring.md` | 插件作者指南：文件形态 + 四条红线（fiber 作用域 invalidate / apply disposer / CAR-STUB 分层 / CAR-INVALIDATED）+ 五阶段表 | POC-2 红线 |
+| `test/s20.spec.ts` + `test/s21.spec.ts` | M6 测试：10 + 13 个 test（五阶段/短路/冲突链/热重载/并发 reload 不变量/doctor 离线/QS-05 P95 最近邻秩） | §3.2.M6 AC |
+
+## M5 状态
+
+- **M5 收口（2026-09-12）**：三项 deferred 全部转正并验证——win32 sandbox spike 四判据自动断言全 PASS（S24/S25/S26）、JSON Schema→TS 深度参数渲染（dee4d67）、跨宿主 fork/resume（03c0fec）。全量 **156/156**。
+- 工具面 9→10（新增 `session_fork`）；`session_start` 增 importJsonl 导入路径；RC-3 冻结未生效（1.0-rc tag 未切），工具面契约变更合规登记。
+
+## M6 状态
+
+- **M6 收口（2026-09-15）**：**179/179 全绿（s1–s20 166 + s21 13，零回归）**；QA 两轮制——Round 1 发现 M6-BUG-1（重名插件被 topo 误报 CAR-E-DEPCYCLE，register CAR-E-DUP 守卫不可达），工程师修复（topoSort 重名安全：pushed/pushedNames 双轨；register DUP 守卫恢复可达 + 全量同名文件冲突链）后 Round 2 PASS。CLI 实测 reload 退出码 0/1/2 ✅、CAR_OFFLINE=1 doctor 离线 PASS ✅。QS-05：20 轮缓存击穿热重载 × 5 插件 P95 个位数 ms（目标 ≤800ms）。
+- 口径备注：DUP 拦截点钉在 register 阶段（QA 裁定接受：文档口径 + 冲突链定位质量更优）；topoSort 仅对真实依赖环报 CAR-E-DEPCYCLE。
+- 环境备注：测试命令须用 glob 形态 `node --experimental-transform-types --test "test/*.spec.ts"`（目录参数在 Node 22.22.2 下 MODULE_NOT_FOUND）。
+
 ## 状态
 
-- S1-S4：48/48 ✅ ｜ M2：89/89（v0.2.0）｜ M3：127/127（v0.3.0）｜ M4：S17→S18→S19→S20→S21→**S22 rc 彩排 ✅（139/139 @ 1.0.0-rc.1，9 PASS/4 DRY-RUN/0 FAIL；彩排捕获 3 真问题：koffi 依赖分类/非法 semver/tgz 膨胀信号）**
-- **GO 清单**（S22-rc发布彩排报告.md §3）：E-1/E-3（轨道 A）+ T-1/T-4 决策 + 试点数据 + npm pack 制品复核——全部按清单打勾即发布 1.0.0-rc.1。
-- M4 待办：**S21 rc 准入核查已出（M4-rc准入核查报告.md）**——RC-4 ✅ 实测、RC-1/2/3/5/6 待评审定稿+环境动作+试点数据，工程侧证据链 80%+ 齐备、无设计/代码缺口；S22 预演 13/13 + 1.0-rc 发布（待轨道 A E-1/E-2/E-3 与 T-1/T-4 决策）。
-- M4 待办：S18 Claude Code 实连 + 采集窗口开启（采集面已就位）；S19 Codex 实连 + registry 增补评审；S20 enforce 决策 + PTC 评测（脚本 2 人日待实装）；轨道 A（你）：E-1/E-2/E-3 沙箱外。
-- 环境动作清单（E-1~E-4 + E-6 宿主实连试点）与遗留移交见 delivery/M3收口终验报告.md；M4 预埋：fork 跨宿主/深度参数渲染/定时导出。
+- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ **M6 179/179 全绿（2026-09-15 收口）**
+- **1.0.0-rc.1 已发布（2026-09-09）**：npm `@lqc123qwe/car-runtime@1.0.0-rc.1`（rc + latest 双 tag，SLSA provenance 在案）+ GitHub Release 6 制品；发布预演 **13 PASS / 0 DRY-RUN / 0 FAIL**（c762b72）。S22 GO 清单已全绿收口。
+- **轨道 A 三项全部完成**：E-1 WSL2 逃逸矩阵 **20/20 PASS 零逃逸**（2026-09-07，G-07 转 PASS）｜ E-3 远端发布通道 **13/13 全门禁 PASS**（2026-09-09，G-08/09/10 转 PASS）｜ E-2 Windows koffi FFI **四判据双环境全 PASS**（S24/S25/S26，2026-09-09~10；本机非提权 + windows-latest 提权 runner 双绿，CI 门禁已接入）。
+- **决策已闭环**：**T-1** enforce 阈值定稿 **A=5% / B=2% / C=30 会话** + 裁决**显式延期**（2026-09-09，S20 §5 归档；红线禁止以 warn 静默进 1.0）｜**T-4** MLPS-G1 定时导出维持部署方配套（2026-09-09，D-4 追记）｜**DEC-2** Windows CI 接入 / **DEC-3** 发布前 token rotate / **DEC-4** M3 预埋项纳入 1.0（均 2026-09-09 裁决）。
+- **1.0 唯一未闭环项 = DEC-1**（enforce 形态三选一，S28 复评）：前置为 S27 试点回收（登记表 ≥3 家 + E-6 GUI 实连 ≥1 家 + ≥30 会话）；复评时点 = 会话数 ≥30 或 1.0 发布前两周（先到为准）。**工程侧不存在待补的设计或代码缺口。**
+- M4 预埋项**已全部出清**：fork 跨宿主 / 深度参数渲染于 2026-09-12 转正（dee4d67 + 03c0fec）；定时导出经 T-4 裁决维持部署方配套。
 - **内核行为修复（S14 捕获）**：工具异常原会终止 turn（reason=error）——已修为「成对错误 toolResult 交回模型」（US-5/D5 语义：工具错误是结果而非 turn 中断），121 断言零回退。
-- 环境动作清单（E-1~E-5）与遗留移交（T-8 等）见 delivery/M2收口终验报告.md；G-03 豁免机制：secrets 规则库/标定基准显式列文件豁免，清单变更需评审。
-- M2 待办：S6 验签器实装（ADR-003）+ F13 五层停止（M2系统设计增补 T-1）；S7/S8 跨平台沙箱（Windows koffi spike）；S9 治理+导出；S10 收口。
-- **N2 实测**：首插件跑通 3ms（目标 ≤300s，余量 10 万倍）
-- **Q-06 定标回填**：装配 20 插件 <1ms；serial 分发 1000 次 6ms；日志 1 万事件追加+哈希链 125ms、回放+校验 21ms
-- 待办：jiti 实装补测首载时延（载体替身已验证不变量）；POC-4 Linux/WSL2 实跑；发布工程预演（dist-tag beta）
+- **性能定标（回填）**：N2 首插件跑通 3ms（目标 ≤300s，余量 10 万倍）｜ Q-06 装配 20 插件 <1ms、serial 分发 1000 次 6ms、日志 1 万事件追加+哈希链 125ms、回放+校验 21ms ｜ QS-05 20 轮缓存击穿热重载 × 5 插件 P95 个位数 ms（目标 ≤800ms）。
+- **历史留存**（早期里程碑，均已闭环或经裁决移交）：M3 环境动作清单 E-1~E-4 + E-6 宿主实连试点见 `car-docs/10-内核v1/M3收口终验报告.md`；M2 清单 E-1~E-5 与 T-8 移交见 `M2收口终验报告.md`；G-03 豁免机制——secrets 规则库/标定基准显式列文件豁免，清单变更需评审。
+- **遗留（非阻塞）**：jiti 实装补测首载时延（载体替身已验证不变量）。POC-4 Linux/WSL2 实跑已随 E-1 完成（20/20）。

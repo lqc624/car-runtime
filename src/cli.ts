@@ -3,9 +3,10 @@
  *
  * 命令（语义化退出码：0=成功，1=失败，2=用法错误）：
  *   car run <plugin.ts> [--turns N]     快速上手流：装配插件 → 跑一轮对话 → 日志落盘 → 审计摘要
+ *   car reload <plugin.ts|dir>          热重载：epoch 击穿缓存 → invalidate 旧实例 → 五阶段加载报告
  *   car session verify <events.jsonl>   哈希链完整性校验（断链即告警，审计员入口）
  *   car session replay <events.jsonl>   deriveMessages 投影回放（不依赖模型状态）
- *   car doctor                          环境自检（Node 版本/沙箱能力探测）
+ *   car doctor                          环境自检（Node 版本/沙箱/凭据/连通性）
  */
 import { writeFileSync } from 'node:fs'
 import { probeCapabilities, SandboxExecutor } from './sandbox/sandbox.ts'
@@ -13,12 +14,21 @@ import { SessionLog, loadSessionLog } from './session/log.ts'
 import { runTurn } from './loop/stop.ts'
 import { Context } from './kernel/context.ts'
 import { mountPlugin } from './load/loader.ts'
+import { doctorCredentials, doctorConnectivity } from './dx/doctor.ts'
 
 const HELP = `用法: car <command> [args]
   run <plugin.ts>       装配并运行插件（快速上手流）
+  reload <file|dir>     热重载插件并打印五阶段加载报告
   session verify <file> 哈希链完整性校验
   session replay <file> 会话回放（deriveMessages 投影）
   doctor                环境自检`
+
+// 进程内热重载会话（ReloadManager 持有 epoch 与实例注册表；同进程连续 reload 语义完整）
+let reloadMgrPromise: Promise<import('./load/report.ts').ReloadManager> | undefined
+function getReloadManager() {
+  reloadMgrPromise ??= import('./load/report.ts').then(m => new m.ReloadManager())
+  return reloadMgrPromise
+}
 
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv
@@ -64,11 +74,28 @@ async function main(): Promise<number> {
       console.log(`首插件跑通总耗时：${((Date.now() - t0) / 1000).toFixed(1)}s（N2 目标 ≤300s）`)
       return 0
     }
+    case 'reload': {
+      const target = rest[0]
+      if (!target) { console.error('缺少插件文件或目录参数'); return 2 }
+      const { formatLoadReport } = await import('./load/report.ts')
+      const mgr = await getReloadManager()
+      const { report, plugins } = await mgr.reload(target)
+      for (const line of formatLoadReport(report)) console.log(line)
+      console.log(`装配插件：${plugins.map(p => `${p.manifest.name}@${p.manifest.version}`).join(', ') || '无'}`)
+      return report.stages.some(s => s.status === 'FAIL') ? 1 : 0
+    }
     case 'doctor': {
       const probe = await probeCapabilities()
       console.log(`node: ${process.version}（要求 ≥22.19）`)
       console.log(`sandbox: ${probe.degraded ? `DEGRADED（${probe.reason}）` : 'Landlock+seccomp 就绪'}`)
       console.log(`盘加密提示: ${process.platform === 'win32' ? '建议启用 BitLocker' : '建议启用 LUKS/FileVault'}`)
+      // M6 增强：凭据存在性（只报 present/not-set，值永不打印）
+      for (const c of doctorCredentials()) {
+        console.log(`credentials.${c.envVar}: ${c.present ? '已设置（值不打印）' : `未设置 — ${c.hint}`}`)
+      }
+      // M6 增强：registry 连通性（不可达 = SKIPPED 显式跳过，离线不失败）
+      const conn = await doctorConnectivity()
+      console.log(`connectivity: ${conn.status} — ${conn.detail}${conn.status === 'PASS' ? `（${conn.latencyMs}ms）` : ''}`)
       return 0
     }
     case 'session': {

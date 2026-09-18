@@ -35,7 +35,8 @@ function satisfiesRange(version: string, range: string): boolean {
  */
 export interface PeerViolation { peer: string; range: string; installed: string | null; optional: boolean }
 
-export function validatePeers(manifest: Manifest, installed: Map<string, string>): { exempted: boolean; violations: PeerViolation[] } {
+/** 纯收集：仅计算违规项，不抛错（M6 加载报告用——冲突链需结构化定位而非只有异常消息） */
+export function computePeerViolations(manifest: Manifest, installed: Map<string, string>): PeerViolation[] {
   const violations: PeerViolation[] = []
   for (const p of manifest.peers ?? []) {
     const v = installed.get(p.peer)
@@ -45,6 +46,11 @@ export function validatePeers(manifest: Manifest, installed: Map<string, string>
     }
     if (!satisfiesRange(v, p.range)) violations.push({ peer: p.peer, range: p.range, installed: v, optional: !!p.optional })
   }
+  return violations
+}
+
+export function validatePeers(manifest: Manifest, installed: Map<string, string>): { exempted: boolean; violations: PeerViolation[] } {
+  const violations = computePeerViolations(manifest, installed)
   const hard = violations.filter(v => !v.optional)
   if (!hard.length) return { exempted: false, violations }
   if (manifest.peerPolicyOverride?.relaxed) {
