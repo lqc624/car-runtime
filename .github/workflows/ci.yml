@@ -98,6 +98,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { name: landlock-run-linux-x64-gnu, path: dist/ci-artifacts }
+      - name: 恢复可执行位（artifact zip 不保留 +x；run 35313717410 教训）
+        run: chmod +x dist/ci-artifacts/landlock-run
       - name: 产物指纹校验（防制品传递错位，对齐 M2 §3.5）
         run: |
           EXPECTED="$(cut -d' ' -f1 dist/ci-artifacts/landlock-run.sha256)"
@@ -238,10 +240,11 @@ jobs:
         shell: bash
         run: |
           set -e
-          # git-bash 的 pwd = /d/a/<repo>/<repo> → WSL 挂载形式 = /mnt/d/a/<repo>/<repo>
-          REPO_WSL="/mnt/$(pwd | sed 's#^/##')"
-          echo "repo (wsl): $REPO_WSL"
-          bash "$REPO_WSL/test/sandbox-escape/j17-orchestrate.sh" "$REPO_WSL" "$REPO_WSL/dist/ci-artifacts/landlock-run"
+          # run 35313717410 教训：runner 的 D 盘不一定被 automount（/mnt/d 不存在）——
+          # 全部经 tar 流直灌 ext4（~/car-import），绕开 /mnt 依赖；编排器从该路径自取 native/test
+          wsl -d Ubuntu-24.04 -e bash -c "rm -rf ~/car-import && mkdir -p ~/car-import"
+          tar -cf - native test dist/ci-artifacts | wsl -d Ubuntu-24.04 -e bash -c "tar -xf - -C ~/car-import && chmod +x ~/car-import/dist/ci-artifacts/landlock-run"
+          wsl -d Ubuntu-24.04 -e bash -c "bash ~/car-import/test/sandbox-escape/j17-orchestrate.sh ~/car-import ~/car-import/dist/ci-artifacts/landlock-run"
       - name: 步骤 6 · 审计 JSONL 回传（无论成败）
         if: always()
         shell: bash
@@ -249,6 +252,8 @@ jobs:
           REPO_WSL="/mnt/$(pwd | sed 's#^/##')"
           mkdir -p dist/ci-audit
           wsl -d Ubuntu-24.04 -e bash -c "cp ~/car-matrix/audit/escape-audit.jsonl '$REPO_WSL/dist/ci-audit/escape-audit.jsonl' 2>/dev/null || true" || true
+          # /mnt 不可用时兜底：cat 直出（run 35313717410 教训）
+          [ -s dist/ci-audit/escape-audit.jsonl ] || wsl -d Ubuntu-24.04 -e bash -c "cat ~/car-matrix/audit/escape-audit.jsonl" > dist/ci-audit/escape-audit.jsonl 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: j17-escape-audit, path: dist/ci-audit/escape-audit.jsonl, retention-days: 90 }
