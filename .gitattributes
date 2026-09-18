@@ -1,0 +1,11 @@
+# 行尾纪律：Windows runner checkout 默认 autocrlf=true 会把文本文件打成 CRLF，
+# WSL 内 bash 脚本遇 \r 即炸（run 35314482866：set: pipefail\r invalid option）。
+* text=auto
+*.sh text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+Makefile text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.ts text eol=lf

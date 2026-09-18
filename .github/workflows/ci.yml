@@ -244,6 +244,8 @@ jobs:
           # 全部经 tar 流直灌 ext4（~/car-import），绕开 /mnt 依赖；编排器从该路径自取 native/test
           wsl -d Ubuntu-24.04 -e bash -c "rm -rf ~/car-import && mkdir -p ~/car-import"
           tar -cf - native test dist/ci-artifacts | wsl -d Ubuntu-24.04 -e bash -c "tar -xf - -C ~/car-import && chmod +x ~/car-import/dist/ci-artifacts/landlock-run"
+          # 防御性去 CR：runner checkout 可能仍产 CRLF（\r 会让 set -euo pipefail 直接 invalid option）
+          wsl -d Ubuntu-24.04 -e bash -c "sed -i 's/\r\$//' ~/car-import/test/sandbox-escape/*.sh"
           wsl -d Ubuntu-24.04 -e bash -c "bash ~/car-import/test/sandbox-escape/j17-orchestrate.sh ~/car-import ~/car-import/dist/ci-artifacts/landlock-run"
       - name: 步骤 6 · 审计 JSONL 回传（无论成败）
         if: always()
