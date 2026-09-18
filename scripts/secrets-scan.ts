@@ -34,8 +34,14 @@ for (const file of tracked) {
       if (name === 'generic-secret-assign' && /process\.env\.|\$\{[A-Z_]+\}/.test(line)) continue
       // 豁免 2：锁文件 integrity 字段（sha512- 前缀的依赖指纹，非密钥）
       if (name === 'long-base64-blob' && /"integrity":\s*"sha512-/.test(line)) continue
-      // 豁免 3：规则定义文件自身（secrets 规则库/样本测试——模式定义处必然"命中"）
-      if (file.endsWith('secrets-scan.ts') || /^src\/security\/secrets\.ts$/.test(file) || file.includes('test/s7.spec.ts')) continue
+      // 豁免 3：规则/样本/基准集定义文件自身（模式定义与基准集生成处必然"命中"）
+      //   - secrets.ts = 规则库；secrets-baseline.ts/s7b.spec.ts = E-5 万级基准集生成器（内含仿真密钥模板）
+      if (
+        file.endsWith('secrets-scan.ts') ||
+        /^src\/security\/secrets(\.ts|-baseline\.ts)$/.test(file) ||
+        /^test\/s7(b-baseline)?\.spec\.ts$/.test(file) ||
+        file === 'scripts/secrets-baseline.ts'
+      ) continue
       console.error(`  [${name}] ${file}:${i + 1}  ${line.trim().slice(0, 90)}`)
       findings++
     }
