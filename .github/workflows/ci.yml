@@ -13,6 +13,11 @@
 name: ci
 on: [push, pull_request]
 
+# CodeQL SARIF 上传需要 security-events: write（run 35312565781 首跑 j01 analyze 403 教训）
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   # ── J-01 lint-scan-build：typecheck + CodeQL + 依赖审计 + 密钥扫描 + landlock-run 单点编译 ──
   j01-lint-scan-build:
