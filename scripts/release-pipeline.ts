@@ -19,7 +19,7 @@ const VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')).ve
 const audit: any[] = []
 const auditLog = (stage: string, gate: string, verdict: string, detail: Record<string, unknown> = {}) =>
   audit.push({ stage, gate, verdict, ts: Date.now(), ...detail })
-const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
+const sha256 = (s: string | Buffer) => createHash('sha256').update(s).digest('hex')
 
 function walk(dir: string, ext: string): string[] {
   const out: string[] = []
@@ -160,9 +160,17 @@ const TARBALL = join(DIST, `car-runtime-${VERSION}.tgz`)
   const stage = 'S6-制品封装'
   execSync(`git archive --format=tar.gz -o "${TARBALL}" HEAD`, { cwd: ROOT })
   const bytes = readFileSync(TARBALL)
-  const sums = `${sha256(bytes.toString('base64'))}  car-runtime-${VERSION}.tgz`
-  writeFileSync(join(DIST, 'SHA256SUMS'), sums + '\n')
-  record(stage, 'G-11 制品校验和（SHA-256）', true, `car-runtime-${VERSION}.tgz (${bytes.length} bytes) → SHA256SUMS`)
+  // 校验和必须对「裸字节」求哈希——曾误写为 sha256(bytes.toString('base64'))，
+  // 记录值成为 base64 字符串的哈希，外部 sha256sum 校验必然失败（rc.1 已发生）。
+  const sumsPath = join(DIST, 'SHA256SUMS')
+  writeFileSync(sumsPath, `${sha256(bytes)}  car-runtime-${VERSION}.tgz\n`)
+  // 自检：从落盘文件读回，复核其确实等于制品裸字节哈希（门禁不可写死为 true）
+  const [recorded, recordedName] = readFileSync(sumsPath, 'utf-8').trim().split(/\s+/)
+  const actual = sha256(bytes)
+  const ok = recorded === actual && recordedName === `car-runtime-${VERSION}.tgz`
+  record(stage, 'G-11 制品校验和（SHA-256）', ok, ok
+    ? `car-runtime-${VERSION}.tgz (${bytes.length} bytes) → SHA256SUMS ${recorded.slice(0, 16)}…（已按裸字节复核，外部 sha256sum 可验证）`
+    : `校验和自检失败：SHA256SUMS 记录 ${recorded} ≠ 制品裸字节哈希 ${actual}`)
 }
 
 // ── 阶段 6b：cosign 本地实签 + 验签（G-08，keypair 模式；CI 正式发布切换 keyless OIDC）──
