@@ -1,25 +1,262 @@
+# CI 门禁矩阵（M2部署设计增补 §2.3 16 Job + M3部署设计增补 §2.2 增列 J-17/J-18 = 18 Job ≤ 20）
+#
+# 落地口径（2026-09-18，实施记录见 car-docs/10-内核v1/M3部署设计增补.md 追记）：
+#   - 矩阵 Job 名对齐文档编号（j01-.../j02-...），required check = j05/j07/j17/j18（G-07 载体 + E-2 收编 + WSL2 对等层 + registry E2E）；
+#   - 测试/逃逸 Job 禁止重试（M2 §2.4 纪律）；仅打包 Job 允许维护者判定后 rerun；
+#   - 构建单源：landlock-run 仅在 j01 编译（linux-x64-gnu），j05/j17 消费 artifact 并校验 sha256，禁止平台内重编译（M3 §2.1.2）；
+#   - J-06 escape-macos = 冻结态登记（M3 §2.4 纪律）：macOS Seatbelt 仅 M2-S7 生成器实装，
+#     实跑用例不存在——不设 Job，非 CI 项登记于本注释与文档追记，复核时点 = macOS 实装启动；
+#     darwin 逃逸回归的现状覆盖 = j03 全量单测（含 buildSeatbeltProfile 生成器断言）；
+#   - J-16 release-merge = release.yml（tag 触发：SBOM/SHA256SUMS + npm publish --provenance）；
+#   - typecheck 门禁范围 = src/ + scripts/（tsconfig include）；test/ 为宽松 fixture 风格，
+#     由 node --experimental-transform-types 运行时承载（erasable-TS，类型剥离语义）——显式登记，非遗漏。
 name: ci
 on: [push, pull_request]
+
 jobs:
-  test:
+  # ── J-01 lint-scan-build：typecheck + CodeQL + 依赖审计 + 密钥扫描 + landlock-run 单点编译 ──
+  j01-lint-scan-build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22.19' }
-      - run: node --experimental-transform-types --test test/*.spec.ts
-      # N1 日志不变量断言已内嵌于测试（SessionLog.assertModelVisibleLogged）
-      # S3 追加门禁：沙箱逃逸回归矩阵（tests/sandbox-escape）+ 密钥扫描 + 依赖审计
+      - name: cache（键 = 源码哈希 + 工具链 + 三元组，M3 §2.1.2）
+        uses: actions/cache@v4
+        with:
+          path: native/landlock-run/landlock-run
+          key: landlock-run-${{ hashFiles('native/landlock-run/**') }}-gcc-${{ runner.os }}-linux-x64-gnu
+      - run: npm install
+      - name: typecheck（strict，src+scripts 生产面）
+        run: npx -y -p typescript tsc --noEmit -p tsconfig.json
+      - name: CodeQL（M2 §2.3 J-01 静态分析面）
+        uses: github/codeql-action/init@v3
+        with: { languages: javascript-typescript }
+      - uses: github/codeql-action/analyze@v3
+      - name: 依赖审计（npm audit，lockfile 口径；非阻塞登记——升级为阻塞需评审）
+        run: npm audit --omit=dev --audit-level=high || echo "::warning::npm audit findings — 见日志"
+      - name: 密钥扫描（仓库级 fail-closed）
+        run: node --experimental-transform-types scripts/secrets-scan.ts
+      - name: landlock-run 单点编译（M3 §2.1.2 构建单源）
+        run: |
+          make -C native/landlock-run
+          sha256sum native/landlock-run/landlock-run > native/landlock-run/landlock-run.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: landlock-run-linux-x64-gnu
+          path: |
+            native/landlock-run/landlock-run
+            native/landlock-run/landlock-run.sha256
+          retention-days: 7
 
-  # M5-S26（DEC-2 裁决接入）：Windows 四判据门禁——受限 token + Job Object 沙箱 spike，
-  # 脚本退出码直连（FAIL 即非零）。1.0-GO-2 判据 1+2 / 1.0-GO-3 判据 3 的远端复核。
-  win32-spike:
-    runs-on: windows-latest
+  # ── J-02/J-03/J-04 三平台全量单测（179/179 基线不回退）+ G-06 Node 一致性 ──
+  j02-test-linux:
+    needs: [j01-lint-scan-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node -p "'G-06 node ' + process.version"
+      - run: node --experimental-transform-types --test "test/*.spec.ts"
+
+  j03-test-macos:
+    needs: [j01-lint-scan-build]
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node -p "'G-06 node ' + process.version"
+      - run: node --experimental-transform-types --test "test/*.spec.ts"
+
+  j04-test-windows:
+    needs: [j01-lint-scan-build]
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node -p "'G-06 node ' + process.version"
+      - run: node --experimental-transform-types --test "test/*.spec.ts"
+
+  # ── J-05 escape-linux（required check，G-07 转 PASS 载体）：20 条 POC-4 移植用例常驻 + 审计 JSONL 常驻上传 ──
+  j05-escape-linux:
+    needs: [j02-test-linux]   # 传递依赖 j01（消费其 landlock-run 产物，禁止重编译）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: landlock-run-linux-x64-gnu, path: dist/ci-artifacts }
+      - name: 产物指纹校验（防制品传递错位，对齐 M2 §3.5）
+        run: |
+          EXPECTED="$(cut -d' ' -f1 native/landlock-run/landlock-run.sha256)"
+          ACTUAL="$(sha256sum dist/ci-artifacts/landlock-run | cut -d' ' -f1)"
+          echo "expected=$EXPECTED actual=$ACTUAL"
+          [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::landlock-run artifact sha256 mismatch"; exit 1; }
+      - name: 环境自检 + 逃逸矩阵实跑（20 条 × 5 类；exit 2 = 环境失败，§2.1.3）
+        run: bash test/sandbox-escape/run-matrix.sh "$(pwd)/dist/ci-artifacts/landlock-run" "$(pwd)/dist/ci-audit"
+      - name: 审计 JSONL 常驻上传（无论成败，§2.1.1 步骤 6）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: j05-escape-audit, path: dist/ci-audit/escape-audit.jsonl, retention-days: 90 }
+
+  # ── J-07 escape-windows（required check，E-2 实装态收编）：受限 token + Job Object 四判据 ──
+  j07-escape-windows:
+    needs: [j04-test-windows]
+    runs-on: windows-2022
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22.19' }
       - run: npm install
-      - name: FFI debug matrix (diagnostic, S26 0xC0000142 排查)
+      - name: FFI debug matrix（diagnostic，S26 0xC0000142 排查）
         run: node --experimental-transform-types scripts/win32-ffi-debug.ts
-      - run: node --experimental-transform-types scripts/win32-koffi-spike.ts
+      - name: 四判据沙箱 spike（FAIL 即非零退出，脚本退出码直连）
+        run: node --experimental-transform-types scripts/win32-koffi-spike.ts
+
+  # ── J-08 invariant-n1：N1 不变量 100 回放 fixtures（含篡改检出防假绿自检） ──
+  j08-invariant-n1:
+    needs: [j02-test-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node --experimental-transform-types scripts/invariant-n1.ts
+      - uses: actions/upload-artifact@v4
+        with: { name: j08-invariant-n1, path: dist/ci/invariant-n1.jsonl, retention-days: 90 }
+
+  # ── J-09 contract：SessionEventMap 快照只增不删 + 公共 API 兼容 ──
+  j09-contract:
+    needs: [j02-test-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node --experimental-transform-types scripts/contract-check.ts
+
+  # ── J-10/J-11/J-12 dx-smoke：QS-05 首跑通冒烟（doctor + reload 五阶段报告） ──
+  j10-dx-smoke-linux:
+    needs: [j02-test-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node --experimental-transform-types src/cli.ts doctor
+      - run: node --experimental-transform-types src/cli.ts reload test/fixtures/hello-plugin.ts
+
+  j11-dx-smoke-macos:
+    needs: [j03-test-macos]
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node --experimental-transform-types src/cli.ts doctor
+      - run: node --experimental-transform-types src/cli.ts reload test/fixtures/hello-plugin.ts
+
+  j12-dx-smoke-windows:
+    needs: [j04-test-windows]
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node --experimental-transform-types src/cli.ts doctor
+      - run: node --experimental-transform-types src/cli.ts reload test/fixtures/hello-plugin.ts
+
+  # ── J-13/J-14/J-15 package-*：npm pack 干跑 + files 白名单/包名断言（唯一允许 rerun 的 Job 组） ──
+  j13-package-linux:
+    needs: [j05-escape-linux, j10-dx-smoke-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node --experimental-transform-types scripts/package-check.ts
+
+  # 依赖调整登记：J-14 原依赖 J-06（冻结态未设 Job）→ 回退 J-03（darwin 测试面），见文件头 J-06 冻结登记
+  j14-package-macos:
+    needs: [j03-test-macos, j11-dx-smoke-macos]
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node --experimental-transform-types scripts/package-check.ts
+
+  j15-package-windows:
+    needs: [j07-escape-windows, j12-dx-smoke-windows]
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node --experimental-transform-types scripts/package-check.ts
+
+  # ── J-17 escape-wsl2（required check，M3 新增）：§2.1.1 六步编排，企业代表拓扑对等回归 ──
+  j17-escape-wsl2:
+    needs: [j02-test-linux]
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: landlock-run-linux-x64-gnu, path: dist/ci-artifacts }
+      - name: 步骤 1 · WSL 启用自检
+        shell: pwsh
+        run: wsl --status
+      - name: 步骤 2 · Ubuntu 24.04 发行版导入（web-download 绕 Store；失败 = 环境失败 §2.1.3）
+        shell: pwsh
+        run: |
+          wsl --install -d Ubuntu-24.04 --no-launch --web-download
+          wsl -d Ubuntu-24.04 -e true
+      - name: 步骤 3-5 · 环境自检 + 工作区迁移 ext4 + 20 条实跑
+        shell: bash
+        run: |
+          set -e
+          # git-bash 的 pwd = /d/a/<repo>/<repo> → WSL 挂载形式 = /mnt/d/a/<repo>/<repo>
+          REPO_WSL="/mnt/$(pwd | sed 's#^/##')"
+          echo "repo (wsl): $REPO_WSL"
+          bash "$REPO_WSL/test/sandbox-escape/j17-orchestrate.sh" "$REPO_WSL" "$REPO_WSL/dist/ci-artifacts/landlock-run"
+      - name: 步骤 6 · 审计 JSONL 回传（无论成败）
+        if: always()
+        shell: bash
+        run: |
+          REPO_WSL="/mnt/$(pwd | sed 's#^/##')"
+          mkdir -p dist/ci-audit
+          wsl -d Ubuntu-24.04 -e bash -c "cp ~/car-matrix/audit/escape-audit.jsonl '$REPO_WSL/dist/ci-audit/escape-audit.jsonl' 2>/dev/null || true"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: j17-escape-audit, path: dist/ci-audit/escape-audit.jsonl, retention-days: 90 }
+
+  # ── J-18 registry-e2e（required check，M3 新增）：Verdaccio 实跑 + §3.6 六用例组 ──
+  j18-registry-e2e:
+    needs: [j02-test-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22.19' }
+      - run: node --experimental-transform-types test/registry-e2e/run-e2e.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: j18-registry-e2e, path: dist/ci/registry-e2e.jsonl, retention-days: 90 }

@@ -100,7 +100,7 @@ export const FIELD_STANDARD_MAP: Record<string, StandardId[]> = {
 /** 分层声明：按标准输出字段集 + 合规声明骨架（合规问卷答复用） */
 export function complianceStatement(std: StandardId): { standard: StandardId; fields: string[]; coreMissing: string[]; statement: string } {
   const fields = AUDIT_FIELDS.filter(f => FIELD_STANDARD_MAP[f]?.includes(std))
-  const coreMissing = [...CORE9].filter(f => !fields.includes(f))
+  const coreMissing = ([...CORE9] as string[]).filter(f => !(fields as string[]).includes(f))
   const lines: Record<StandardId, string> = {
     soc2: 'CAR 会话日志逐事件记录（actor/时间戳/工具名/脱敏后参数与结果/授权凭据），SHA-256 哈希链不可变；保留期默认永久（用户自管），建议 ≥1 年（CC7.2）。',
     gdpr: '事件含 actor/actorDetail/eventType/runtimeVersion（GDPR 第 30 条处理活动可归因）；数据主体权利由部署方在自有环境行使；遥测默认关、零内容字段。',

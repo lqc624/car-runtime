@@ -1,0 +1,7 @@
+{
+  "comment": "J-09 contract 基线：SessionEventMap/SessionEvent 签名字段集。只增不删——本文件中任何键从 src/session/log.ts 的当前签名中消失即 FAIL（M2部署设计增补 §2.3 J-09）",
+  "eventKinds": ["user", "assistant", "toolCall", "toolResult", "turnEnd", "goalUpdate", "hostRaw", "fork"],
+  "actors": ["user", "model", "plugin", "runtime"],
+  "sessionEventFields": ["seq", "ts", "actor", "kind", "turnId", "payload", "meta", "prevHash", "hash"],
+  "sessionLogApi": ["append", "snapshotModelRequest", "verifyChain", "deriveMessages", "assertModelVisibleLogged", "stats", "fromEvents", "exportJSONL"]
+}

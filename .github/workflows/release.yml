@@ -6,8 +6,10 @@ on:
 permissions:
   contents: read
   id-token: write
+# J-16 release-merge（M2 §2.3）：tag/Release 触发 → npm publish --provenance。
+# SBOM/SHA256SUMS/cosign 由 scripts/release-pipeline.ts 承载（本地/沙箱外轨，M3 §2.1.2 单源编译已入 CI j01）。
 jobs:
-  publish:
+  j16-release-merge:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

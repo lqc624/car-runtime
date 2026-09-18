@@ -46,6 +46,7 @@ async function main(): Promise<number> {
       ctx.plugin({ name: plugin.manifest.name, apply: (c) => {
         plugin.bindCore({
           registerTool: (t) => { hostTools.push(t); c.provide('tool:' + t.name, t) },
+          getRegisteredTools: () => hostTools,
         })
         plugin.api.registerTool({
           name: 'demo_tool', run: async () => 'demo-ok',

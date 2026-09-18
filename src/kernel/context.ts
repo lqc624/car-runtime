@@ -66,7 +66,8 @@ export class Context {
     fiber.state = 'ACTIVE'
     const pluginCtx: PluginContext = {
       effect: (body: () => Disposer | Disposer[], label = 'anonymous') => {
-        const disposers = typeof body === 'function' ? [body()] : [...body()]
+        const res = body()
+        const disposers = typeof res === 'function' ? [res] : [...res]
         for (const d of disposers) fiber.disposables.push({ label, disposer: d as Disposer })
       },
       provide: (name: string, impl: unknown) => this.provide(name, impl, def.name),
