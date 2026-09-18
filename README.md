@@ -123,6 +123,8 @@ node --experimental-transform-types --test test/*.spec.ts
 
 ## M6 状态
 
+- **CI 门禁矩阵落地（09-18）**：ci.yml 重写为 16 Job + release.yml=j16（18/18 对齐 M2§2.3+M3§2.2 全景）；新增 landlock-run 原生组件（构建单源 j01）、20 条逃逸矩阵用例（WSL2 实跑 20/20）、Verdaccio registry E2E（15/15）、N1 不变量 100 回放（含篡改检出防假绿）、secrets-scan/contract-check/package-check 脚本门禁、tsc strict 门禁（tsconfig 此前不存在——幽灵门禁同类项）。J-06 macOS 冻结态登记不设 Job。幽灵注释三项门禁全部兑现。
+
 - **M6 收口（2026-09-15）**：**179/179 全绿（s1–s20 166 + s21 13，零回归）**；QA 两轮制——Round 1 发现 M6-BUG-1（重名插件被 topo 误报 CAR-E-DEPCYCLE，register CAR-E-DUP 守卫不可达），工程师修复（topoSort 重名安全：pushed/pushedNames 双轨；register DUP 守卫恢复可达 + 全量同名文件冲突链）后 Round 2 PASS。CLI 实测 reload 退出码 0/1/2 ✅、CAR_OFFLINE=1 doctor 离线 PASS ✅。QS-05：20 轮缓存击穿热重载 × 5 插件 P95 个位数 ms（目标 ≤800ms）。
 - 口径备注：DUP 拦截点钉在 register 阶段（QA 裁定接受：文档口径 + 冲突链定位质量更优）；topoSort 仅对真实依赖环报 CAR-E-DEPCYCLE。
 - 环境备注：测试命令须用 glob 形态 `node --experimental-transform-types --test "test/*.spec.ts"`（目录参数在 Node 22.22.2 下 MODULE_NOT_FOUND）。
