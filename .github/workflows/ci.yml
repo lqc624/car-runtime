@@ -247,7 +247,7 @@ jobs:
         run: |
           REPO_WSL="/mnt/$(pwd | sed 's#^/##')"
           mkdir -p dist/ci-audit
-          wsl -d Ubuntu-24.04 -e bash -c "cp ~/car-matrix/audit/escape-audit.jsonl '$REPO_WSL/dist/ci-audit/escape-audit.jsonl' 2>/dev/null || true"
+          wsl -d Ubuntu-24.04 -e bash -c "cp ~/car-matrix/audit/escape-audit.jsonl '$REPO_WSL/dist/ci-audit/escape-audit.jsonl' 2>/dev/null || true" || true
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: j17-escape-audit, path: dist/ci-audit/escape-audit.jsonl, retention-days: 90 }
