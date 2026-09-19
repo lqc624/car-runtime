@@ -29,6 +29,8 @@ export interface ForensicsBundle {
     verifyChainAtExport: 'PASS'
     meta: ExportMeta
     files: { name: string; sha256: string }[]
+    /** 物理布局登记（M7 存储增强）：zstd 落盘时写入；逻辑口径（files[].sha256）恒为明文自证 */
+    storage?: { encoding: 'zstd'; storedAs: string; physicalSha256: string }
   }
 }
 

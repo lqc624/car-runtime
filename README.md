@@ -116,6 +116,11 @@ node --experimental-transform-types --test test/*.spec.ts
 | `docs/plugin-authoring.md` | 插件作者指南：文件形态 + 四条红线（fiber 作用域 invalidate / apply disposer / CAR-STUB 分层 / CAR-INVALIDATED）+ 五阶段表 | POC-2 红线 |
 | `test/s20.spec.ts` + `test/s21.spec.ts` | M6 测试：10 + 13 个 test（五阶段/短路/冲突链/热重载/并发 reload 不变量/doctor 离线/QS-05 P95 最近邻秩） | §3.2.M6 AC |
 
+| `src/session/store.ts` + `src/session/format.ts` | M7 存储层+格式层：SessionFileStore（O_APPEND 单 write 行级原子 + fsyncSync，sink throw = fail-fast 事件不入内存）+ 撕裂尾显式格式校验（崩溃半行显式丢弃报告，与 CAR-E-FORMAT/断链三语义互斥）+ zstd 能力探测 codec（magic 嗅探 layout-blind 直读，缺席显式 CAR-E-ZSTD；实测压缩比 6.21x ≥ 3x 规格口径） | §3.2.M7.1 第 4 点、§3.2.M7.5 |
+| `src/session/indexStore.ts` | M7 C-02 SQLite 会话索引：node:sqlite 动态探测（静态 import 会崩模块加载）+ 单事务幂等重建（DELETE+INSERT）+ 断链/坏格式文件入 errors 不中断（索引只收链完整会话） | §3.2.M7.2 索引行、§3.2.M7.5 Step 3 |
+| `src/cli.ts` session 扩展 + `src/session/log.ts` | M7：car session export（SQ-06 全流程：断链中止 + 取证包落盘 + 读回重验四重 + 离线自证 + --zstd 物理布局双锚点登记）/ rebuild-index / run 全程逐事件 fsync（「先落日志后放行」物理兑现）+ attachSink + loadSessionLog 格式层接入 + deriveSessionId（修路径当 sessionId 旧账） | §3.2.M7.2 导出行 |
+| `test/s22-m7-store-format.spec.ts` + `test/s23-m7-export-index.spec.ts` | M7 测试：8 + 7 个 test（sink 落盘/fail-fast/撕裂尾/格式三语义/zstd 压缩比 ≥3x 与缺席显式/export 离线自证/断链中止/索引幂等/errors 通道） | §3.2.M7 AC |
+
 ## M5 状态
 
 - **M5 收口（2026-09-12）**：三项 deferred 全部转正并验证——win32 sandbox spike 四判据自动断言全 PASS（S24/S25/S26）、JSON Schema→TS 深度参数渲染（dee4d67）、跨宿主 fork/resume（03c0fec）。全量 **156/156**。
@@ -131,9 +136,15 @@ node --experimental-transform-types --test test/*.spec.ts
 - 口径备注：DUP 拦截点钉在 register 阶段（QA 裁定接受：文档口径 + 冲突链定位质量更优）；topoSort 仅对真实依赖环报 CAR-E-DEPCYCLE。
 - 环境备注：测试命令须用 glob 形态 `node --experimental-transform-types --test "test/*.spec.ts"`（目录参数在 Node 22.22.2 下 MODULE_NOT_FOUND）。
 
+## M7 状态
+
+- **M7 收口（2026-09-19）**：§3.2.M7 会话日志与审计规格差距五项全部兑现——W1 落盘存储层（SessionFileStore 单 write 行级原子 + fsync，car run 全程逐事件落盘，「先落日志后放行」从语义到物理）；W2 撕裂尾显式格式校验（崩溃半行显式丢弃报告，撕裂尾/CAR-E-FORMAT/断链三失败语义互斥可判）；W3 zstd 存储增强（能力探测 codec，实测压缩比 6.21x ≥ 3x 规格口径，缺席显式 CAR-E-ZSTD 不静默；热路径恒明文——fail-fast 优先，zstd 定位归档/导出）；W4 `car session export` 取证包 CLI（SQ-06 断链中止 + 落盘读回重验四重 + 离线自证 + --zstd 物理布局双锚点）；W5 `car session rebuild-index`（node:sqlite 单事务幂等重建，errors 通道不吞错，索引只收链完整会话）。全量 **195 测试（192 PASS + 3 能力门控 skip，0 fail）** + tsc strict 0 错。
+- **CI 能力真跑（防幽灵门禁）**：j02/j03/j04 增设 `NODE_OPTIONS: '--experimental-zstd --experimental-sqlite'`——22.15+/22.5+ 需 flag 的能力路径在 CI 实跑；zstd 在场/缺席双路径各由在场/缺席环境实跑（skip 显式登记非静默），无「声称在测实际没测」面。
+- 口径备注：§3.2.M7.2 的 `--session id` 形态以 index（sessionId→file 映射）为底座登记后续增强，export 本迭代以文件路径为入口（与 verify/replay 形态一致）；运行时 append 异步索引自动更新登记后续（缺失由 rebuild 兜底，异步可容忍语义自洽）；deriveMessages 的 roleConsistencyChecked 在 v1 无消息改写面，登记 N/A。详见 `car-docs/10-内核v1/M7-会话日志与审计收口.md`。
+
 ## 状态
 
-- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ **M6 179/179 全绿（2026-09-15 收口）**
+- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ M6 179/179（2026-09-15 收口）｜ **M7 全量 195（192 PASS + 3 能力门控 skip，2026-09-19 收口）**
 - **1.0.0-rc.1 已发布（2026-09-09）**：npm `@lqc123qwe/car-runtime@1.0.0-rc.1`（rc + latest 双 tag，SLSA provenance 在案）+ GitHub Release 6 制品；发布预演 **13 PASS / 0 DRY-RUN / 0 FAIL**（c762b72）。S22 GO 清单已全绿收口。
 - **轨道 A 三项全部完成**：E-1 WSL2 逃逸矩阵 **20/20 PASS 零逃逸**（2026-09-07，G-07 转 PASS）｜ E-3 远端发布通道 **13/13 全门禁 PASS**（2026-09-09，G-08/09/10 转 PASS）｜ E-2 Windows koffi FFI **四判据双环境全 PASS**（S24/S25/S26，2026-09-09~10；本机非提权 + windows-latest 提权 runner 双绿，CI 门禁已接入）。
 - **决策已闭环**：**T-1** enforce 阈值定稿 **A=5% / B=2% / C=30 会话** + 裁决**显式延期**（2026-09-09，S20 §5 归档；红线禁止以 warn 静默进 1.0）｜**T-4** MLPS-G1 定时导出维持部署方配套（2026-09-09，D-4 追记）｜**DEC-2** Windows CI 接入 / **DEC-3** 发布前 token rotate / **DEC-4** M3 预埋项纳入 1.0（均 2026-09-09 裁决）。

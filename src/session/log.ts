@@ -8,6 +8,7 @@
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { decodeLogBuffer, splitJsonlLines } from './format.ts'
 
 export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' | 'fork' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；M5-DEC4 加法扩展：跨宿主 fork 标记事件；六值 TurnEndReason 不变
 export type Actor = 'user' | 'model' | 'plugin' | 'runtime'
@@ -38,9 +39,19 @@ export class SessionLog {
   events: readonly SessionEvent[] = []
   #tail = 'GENESIS'
   #snapshots: ModelSnapshot[] = []
+  #sink: ((line: string) => void) | null = null
 
   constructor(sessionId = 'S-' + Date.now().toString(36)) {
     this.sessionId = sessionId
+  }
+
+  /**
+   * 挂载落盘 sink（§3.2.M7.5 Step 1-2「先落日志后放行」）：append 时同步写盘，
+   * sink 成功后才入内存；sink throw = 写失败 fail-fast（事件不入内存、不推进链尾，
+   * 调用方当前 turn 以 error 收口——内存与盘面永不失配）。
+   */
+  attachSink(sink: (line: string) => void): void {
+    this.#sink = sink
   }
 
   /** 唯一写入路径（append-only；无 update/delete API） */
@@ -49,6 +60,7 @@ export class SessionLog {
       seq: this.events.length, ts: Date.now(), actor, kind, turnId, payload, meta, prevHash: this.#tail,
     }
     const full: SessionEvent = { ...e, hash: canonical(e) }
+    if (this.#sink) this.#sink(JSON.stringify(full))
     this.events = [...this.events, full]
     this.#tail = full.hash
     return full
@@ -114,13 +126,38 @@ export class SessionLog {
   }
 }
 
-/** 从 JSONL 文件加载并校验哈希链（审计回放/跨机迁移入口；断链即拒绝装载；#tail 恢复→装载后续跑不断链） */
-export function loadSessionLog(file: string): { log: SessionLog; brokenAt: number | null } {
-  const lines = readFileSync(file, 'utf-8').split('\n').filter(l => l.trim())
-  const events = lines.map(l => JSON.parse(l) as SessionEvent)
-  // 事件原样重建（绕过 append 的哈希计算），随后用 verifyChain 校验完整性
-  const log = SessionLog.fromEvents(file, events)
-  return { log, brokenAt: log.verifyChain() }
+/** 文件路径 → sessionId 推导：`session-<id>.jsonl[.zstd]` 去前缀后缀；`events.jsonl` 取父目录名（审计定位口径） */
+export function deriveSessionId(file: string): string {
+  const base = file.replace(/.*[/\\]/, '')
+  let id = base.replace(/\.jsonl\.zstd$/, '').replace(/\.jsonl$/, '')
+  if (id === 'events') {
+    const dir = file.replace(/[\\/][^/\\]*$/, '')
+    const name = dir.replace(/.*[/\\]/, '')
+    if (name && name !== dir) id = name // 有父目录才取父目录名，否则保留 'events'
+  } else if (id.startsWith('session-')) id = id.slice('session-'.length)
+  return id
+}
+
+/**
+ * 从 JSONL 文件装载（审计回放/跨机迁移入口）。格式层语义见 format.ts：
+ * 撕裂尾显式报告（丢弃崩溃半行，不静默）；完整行解析失败 CAR-E-FORMAT 拒绝装载；
+ * 断链 = brokenAt 返回（由调用方决定中止口径）。zstd 文件按 magic 嗅探直读。
+ */
+export function loadSessionLog(file: string): {
+  log: SessionLog
+  brokenAt: number | null
+  encoding: 'plain' | 'zstd'
+  tornTail: boolean
+  tornTailBytes: number
+} {
+  const { text, encoding } = decodeLogBuffer(readFileSync(file))
+  const { lines, tornTail, tornTailBytes } = splitJsonlLines(text)
+  const events = lines.map((l, i) => {
+    try { return JSON.parse(l) as SessionEvent }
+    catch (e) { throw new Error(`CAR-E-FORMAT: ${file} 第 ${i + 1} 行非法 JSON——拒绝装载带病日志（${(e as Error).message}）`) }
+  })
+  const log = SessionLog.fromEvents(deriveSessionId(file), events)
+  return { log, brokenAt: log.verifyChain(), encoding, tornTail, tornTailBytes }
 }
 
 export { sha as sha256Hex }

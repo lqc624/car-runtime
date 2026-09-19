@@ -56,10 +56,12 @@ jobs:
           retention-days: 7
 
   # ── J-02/J-03/J-04 三平台全量单测（179/179 基线不回退）+ G-06 Node 一致性 ──
+  # NODE_OPTIONS：M7 能力路径真跑（22.15+ zstd / 22.5+ sqlite 需 flag；23.8+/23.4+ 原生，flag 冗余无害）
   j02-test-linux:
     needs: [j01-lint-scan-build]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env: { NODE_OPTIONS: '--experimental-zstd --experimental-sqlite' }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -71,6 +73,7 @@ jobs:
     needs: [j01-lint-scan-build]
     runs-on: macos-14
     timeout-minutes: 25
+    env: { NODE_OPTIONS: '--experimental-zstd --experimental-sqlite' }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -82,6 +85,7 @@ jobs:
     needs: [j01-lint-scan-build]
     runs-on: windows-2022
     timeout-minutes: 25
+    env: { NODE_OPTIONS: '--experimental-zstd --experimental-sqlite' }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
