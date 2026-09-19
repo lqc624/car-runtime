@@ -7,21 +7,21 @@
  *      格式错误 = 完整行 JSON 解析失败 → CAR-E-FORMAT 拒绝装载（防带病日志静默收缩）；
  *      断链     = 完整行哈希不连续 → brokenAt（既有语义不变，loadSessionLog 返回）。
  *  - 物理编码 layout-blind：按 zstd magic bytes 嗅探解码，读取方不感知 .jsonl / .jsonl.zstd；
- *    zstd 能力随 Node 版本漂移（22.15+ 需 --experimental-zstd / 23.8+ 原生），不可用 = 显式报错非静默。
+ *    zstd 为 22.15+ 原生内置（无 CLI flag，Stability: 1 实验标记），更早版本无此能力——缺席 = 显式报错非静默。
  *  - 运行时热路径恒为明文 append + fsync（fail-fast 优先，见 store.ts）；zstd 定位 = 归档/导出压缩。
  */
 import * as zlib from 'node:zlib'
 
 export const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 
-/** zstd 编解码能力探测（版本碎片显式化：CI 22.19 经 NODE_OPTIONS 打开，23.8+ 原生） */
+/** zstd 编解码能力探测（22.15+ 原生内置，无 flag；更早版本缺席——显式化不静默） */
 export function zstdAvailable(): boolean {
   return typeof zlib.zstdCompressSync === 'function' && typeof zlib.zstdDecompressSync === 'function'
 }
 
 function requireZstd(): void {
   if (!zstdAvailable()) {
-    throw new Error('CAR-E-ZSTD: 当前 Node 无 zstd 编解码能力（22.15+ 需 --experimental-zstd，23.8+ 原生）——显式拒绝，不静默降级')
+    throw new Error('CAR-E-ZSTD: 当前 Node 无 zstd 编解码能力（22.15+/23.8+ 原生内置，更早版本无）——显式拒绝，不静默降级')
   }
 }
 

@@ -12,7 +12,7 @@ import { rebuildIndex, sqliteAvailable } from '../src/session/indexStore.ts'
 import { verifyBundle, type ForensicsBundle } from '../src/session/export.ts'
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.ts')
-const ZSTD_OFF = zstdAvailable() ? false : 'zstd 能力不在场（本机 Node <23.8 且未开 --experimental-zstd）——CI 22.19+NODE_OPTIONS 真跑'
+const ZSTD_OFF = zstdAvailable() ? false : 'zstd 能力不在场（Node <22.15 无此能力）——CI 22.19 原生在场真跑'
 
 // ==================== fixture 工具（红线 8：清理 try/catch 容错） ====================
 

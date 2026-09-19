@@ -101,7 +101,7 @@ test('M7-W2: deriveSessionId 推导规则——session- 前缀剥离 / events.js
 
 // ==================== W3 zstd 存储增强（M2演进 #14③ / M3演进「M7+ 选项」正主） ====================
 
-const ZSTD_OFF = zstdAvailable() ? false : 'zstd 能力不在场（本机 Node <23.8 且未开 --experimental-zstd）——CI 22.19+NODE_OPTIONS 真跑'
+const ZSTD_OFF = zstdAvailable() ? false : 'zstd 能力不在场（Node <22.15 无此能力）——CI 22.19 原生在场真跑'
 
 test('M7-W3: zstd 归档压缩 + magic 嗅探 layout-blind 直读（能力在场时）', { skip: ZSTD_OFF }, () => {
   withTempDir('zstd', (dir) => {
@@ -127,7 +127,7 @@ test('M7-W3: zstd 归档压缩 + magic 嗅探 layout-blind 直读（能力在场
   })
 })
 
-test('M7-W3: zstd 能力缺席 = 显式拒绝（CAR-E-ZSTD），不静默降级（能力缺席环境实跑）', { skip: zstdAvailable() ? 'zstd 能力在场——缺席路径由无 flag 的 22.x 环境覆盖' : false }, () => {
+test('M7-W3: zstd 能力缺席 = 显式拒绝（CAR-E-ZSTD），不静默降级（能力缺席环境实跑）', { skip: zstdAvailable() ? 'zstd 能力在场（22.15+ 原生）——缺席路径由更早版本环境覆盖' : false }, () => {
   // 能力缺席环境（如 22.19 无 flag / 23.5）：magic 命中后必须显式 throw，不得静默按明文装载
   const fakeZstd = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00])
   assert.throws(() => decodeLogBuffer(fakeZstd), /CAR-E-ZSTD/)

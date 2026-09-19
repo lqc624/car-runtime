@@ -160,7 +160,7 @@ async function main(): Promise<number> {
         if (!outDir) { console.error('缺少 --out 目录参数'); return 2 }
         if (brokenAt !== null) { console.error(`断链 @ seq=${brokenAt}——导出中止（SQ-06：不产出带病审计包）`); return 1 }
         const wantZstd = flags.zstd === true
-        if (wantZstd && !zstdAvailable()) { console.error('CAR-E-ZSTD: --zstd 需 zstd 能力（22.15+ 需 --experimental-zstd，23.8+ 原生）'); return 2 }
+        if (wantZstd && !zstdAvailable()) { console.error('CAR-E-ZSTD: --zstd 需 zstd 能力（22.15+/23.8+ 原生内置，当前 Node 无）'); return 2 }
         const events = log.events as SessionEvent[]
         const meta: ExportMeta = {
           sessionId: log.sessionId,
