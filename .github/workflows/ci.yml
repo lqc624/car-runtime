@@ -56,42 +56,40 @@ jobs:
           retention-days: 7
 
   # ── J-02/J-03/J-04 三平台全量单测（179/179 基线不回退）+ G-06 Node 一致性 ──
-  # NODE_OPTIONS：M7 能力路径真跑（22.15+ zstd / 22.5+ sqlite 需 flag；23.8+/23.4+ 原生，flag 冗余无害）
+  # M7 能力真跑：zstd（22.15+）/sqlite（22.5+）flag 直接写在测试命令行——不能走 NODE_OPTIONS
+  # （NODE_OPTIONS 白名单拒绝 --experimental-zstd，run 35451413014 实证；且 job 级 env 会炸 actions 自身 node24）
   j02-test-linux:
     needs: [j01-lint-scan-build]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env: { NODE_OPTIONS: '--experimental-zstd --experimental-sqlite' }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22.19' }
       - run: node -p "'G-06 node ' + process.version"
-      - run: node --experimental-transform-types --test "test/*.spec.ts"
+      - run: node --experimental-zstd --experimental-sqlite --experimental-transform-types --test "test/*.spec.ts"
 
   j03-test-macos:
     needs: [j01-lint-scan-build]
     runs-on: macos-14
     timeout-minutes: 25
-    env: { NODE_OPTIONS: '--experimental-zstd --experimental-sqlite' }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22.19' }
       - run: node -p "'G-06 node ' + process.version"
-      - run: node --experimental-transform-types --test "test/*.spec.ts"
+      - run: node --experimental-zstd --experimental-sqlite --experimental-transform-types --test "test/*.spec.ts"
 
   j04-test-windows:
     needs: [j01-lint-scan-build]
     runs-on: windows-2022
     timeout-minutes: 25
-    env: { NODE_OPTIONS: '--experimental-zstd --experimental-sqlite' }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22.19' }
       - run: node -p "'G-06 node ' + process.version"
-      - run: node --experimental-transform-types --test "test/*.spec.ts"
+      - run: node --experimental-zstd --experimental-sqlite --experimental-transform-types --test "test/*.spec.ts"
 
   # ── J-05 escape-linux（required check，G-07 转 PASS 载体）：20 条 POC-4 移植用例常驻 + 审计 JSONL 常驻上传 ──
   j05-escape-linux:

@@ -139,7 +139,7 @@ node --experimental-transform-types --test test/*.spec.ts
 ## M7 状态
 
 - **M7 收口（2026-09-19）**：§3.2.M7 会话日志与审计规格差距五项全部兑现——W1 落盘存储层（SessionFileStore 单 write 行级原子 + fsync，car run 全程逐事件落盘，「先落日志后放行」从语义到物理）；W2 撕裂尾显式格式校验（崩溃半行显式丢弃报告，撕裂尾/CAR-E-FORMAT/断链三失败语义互斥可判）；W3 zstd 存储增强（能力探测 codec，实测压缩比 6.21x ≥ 3x 规格口径，缺席显式 CAR-E-ZSTD 不静默；热路径恒明文——fail-fast 优先，zstd 定位归档/导出）；W4 `car session export` 取证包 CLI（SQ-06 断链中止 + 落盘读回重验四重 + 离线自证 + --zstd 物理布局双锚点）；W5 `car session rebuild-index`（node:sqlite 单事务幂等重建，errors 通道不吞错，索引只收链完整会话）。全量 **195 测试（192 PASS + 3 能力门控 skip，0 fail）** + tsc strict 0 错。
-- **CI 能力真跑（防幽灵门禁）**：j02/j03/j04 增设 `NODE_OPTIONS: '--experimental-zstd --experimental-sqlite'`——22.15+/22.5+ 需 flag 的能力路径在 CI 实跑；zstd 在场/缺席双路径各由在场/缺席环境实跑（skip 显式登记非静默），无「声称在测实际没测」面。
+- **CI 能力真跑（防幽灵门禁）**：j02/j03/j04 测试命令直挂 `--experimental-zstd --experimental-sqlite`——22.15+/22.5+ 需 flag 的能力路径在 CI 实跑。⚠️ 不能走 `NODE_OPTIONS`（白名单拒绝 `--experimental-zstd`，run 35451413014 实证；且 job 级 env 会炸 actions 自身 node24）。zstd 在场/缺席双路径各由在场/缺席环境实跑（skip 显式登记非静默），无「声称在测实际没测」面。
 - 口径备注：§3.2.M7.2 的 `--session id` 形态以 index（sessionId→file 映射）为底座登记后续增强，export 本迭代以文件路径为入口（与 verify/replay 形态一致）；运行时 append 异步索引自动更新登记后续（缺失由 rebuild 兜底，异步可容忍语义自洽）；deriveMessages 的 roleConsistencyChecked 在 v1 无消息改写面，登记 N/A。详见 `car-docs/10-内核v1/M7-会话日志与审计收口.md`。
 
 ## 状态
