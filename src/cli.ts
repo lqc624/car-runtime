@@ -21,18 +21,23 @@ import { exportForensicsBundle, verifyBundle, type ExportMeta } from './session/
 import { runTurn } from './loop/stop.ts'
 import { Context } from './kernel/context.ts'
 import { mountPlugin } from './load/loader.ts'
+import { verifyPluginFile, gateDepsFromEnv } from './load/sigGate.ts'
 import { doctorCredentials, doctorConnectivity } from './dx/doctor.ts'
 
 const HELP = `用法: car <command> [args]
-  run <plugin.ts>       装配并运行插件（快速上手流）
-  reload <file|dir>     热重载插件并打印五阶段加载报告
+  run <plugin.ts> [--sig-enforce]
+                                    装配并运行插件（快速上手流；装载前签名门 warn 缺省）
+  reload <file|dir> [--sig-enforce]
+                                    热重载插件并打印六阶段加载报告（含 verify 签名门）
   session verify <file>            哈希链完整性校验（撕裂尾显式报告）
   session replay <file>            会话回放（deriveMessages 投影）
   session export <file> --out <dir> [--zstd]
                                     取证包导出（断链中止；落盘读回重验，离线自证）
   session rebuild-index <root> [--db <path>]
                                     从 JSONL 重建 SQLite 会话索引（幂等）
-  doctor                环境自检`
+  doctor                环境自检
+签名门环境变量：CAR_SIG_ENFORCE=1 切 enforce；CAR_TRUST_ROOT=<ed25519 spki base64>；
+CAR_UNSIGNED_ALLOW=1 显式声明豁免（warn 缺签路径计数 confirmed=yes，横幅保留）`
 
 // 进程内热重载会话（ReloadManager 持有 epoch 与实例注册表；同进程连续 reload 语义完整）
 let reloadMgrPromise: Promise<import('./load/report.ts').ReloadManager> | undefined
@@ -48,6 +53,12 @@ async function main(): Promise<number> {
       const file = rest[0]
       if (!file) { console.error('缺少插件文件参数'); return 2 }
       const t0 = Date.now()
+      // 环节 0：装载前签名门（M5-S28；--sig-enforce 显式切 enforce，env 通道见 HELP）
+      const sigOpts = gateDepsFromEnv()
+      if (rest.includes('--sig-enforce')) sigOpts.mode = 'enforce'
+      const g = verifyPluginFile(file, sigOpts)
+      if (!g.allowed) { console.error(`签名门禁拒绝：${g.error ?? 'CAR-E-SIG: rejected'}`); return 1 }
+      if (g.warning) console.log(`[0/5 签名] ⚠ ${g.warning}`)
       // 环节 1：装配加载
       const manifest = { name: file.replace(/.*[/\\]/, '').replace(/\.ts$/, ''), version: '0.0.1' }
       const plugin = await mountPlugin({ file, manifest })
@@ -93,7 +104,10 @@ async function main(): Promise<number> {
       if (!target) { console.error('缺少插件文件或目录参数'); return 2 }
       const { formatLoadReport } = await import('./load/report.ts')
       const mgr = await getReloadManager()
-      const { report, plugins } = await mgr.reload(target)
+      // 装载签名门透传（M5-S28）：--sig-enforce / env 通道，六阶段报告含 verify
+      const sigOpts = gateDepsFromEnv()
+      if (rest.includes('--sig-enforce')) sigOpts.mode = 'enforce'
+      const { report, plugins } = await mgr.reload(target, { signature: sigOpts })
       for (const line of formatLoadReport(report)) console.log(line)
       console.log(`装配插件：${plugins.map(p => `${p.manifest.name}@${p.manifest.version}`).join(', ') || '无'}`)
       return report.stages.some(s => s.status === 'FAIL') ? 1 : 0

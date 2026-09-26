@@ -2,13 +2,15 @@
  * M6 · 加载报告与装配编排（《系统设计》§3.2.M6）
  *
  * 口径：
- *  - 五阶段流水线：discover → parse → validate → topo → register，任一阶段 FAIL 短路
- *    后续阶段（status=SKIPPED），FAIL 必附错误定位（文件 + 原因，冲突链进 conflicts）
+ *  - 六阶段流水线：discover → verify → parse → validate → topo → register，任一阶段 FAIL 短路
+ *    后续阶段（status=SKIPPED），FAIL 必附错误定位（文件 + 原因，冲突链进 conflicts）。
+ *    verify 为 M5-S28 加法演进（2026-09-26）：装载前签名门（ADR-003 / DEC-1 ②）——必须先于
+ *    parse 的 import()，模块执行前拦截（否则恶意代码已运行，验签失去供应链意义）
  *  - LoadReportVO 字段名逐字对齐 §3.2.M6.3（installId/startedTime/durationMs/stages/warnings）；
  *    `error` 为规格外扩展字段（非冲突类失败——如 manifest 语法错——也需要文件+原因定位，BD-03）
  *  - git 直载（工作树内含 .git 即视为未经 registry 安装的直载来源）产生 CAR-W-GIT-DIRECT 告警（E-03 语义）
  *  - 热重载（SQ-05）：epoch+1 击穿缓存 → invalidate 旧实例（旧 ctx 后续访问经 Proxy 抛
- *    CAR-INVALIDATED）→ 重走 discover→register，产出五阶段加载报告
+ *    CAR-INVALIDATED）→ 重走 discover→register，产出六阶段加载报告
  */
 import { readdirSync, existsSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
@@ -21,10 +23,11 @@ import {
   type Manifest,
   type LoadedPlugin,
 } from './loader.ts'
+import { verifyPluginFile, type SignatureGateOptions } from './sigGate.ts'
 
 // ==================== VO / DTO（字段名逐字对齐 §3.2.M6.3） ====================
 
-export type LoadStage = 'discover' | 'parse' | 'validate' | 'topo' | 'register'
+export type LoadStage = 'discover' | 'verify' | 'parse' | 'validate' | 'topo' | 'register'
 export type StageStatus = 'PASS' | 'FAIL' | 'SKIPPED'
 
 /** 冲突链定位：文件 / 依赖路径 / 区间 / 实际版本（§3.2.M6.3 stages[].conflicts） */
@@ -117,6 +120,8 @@ export interface LoadPluginsOptions {
   installedVersions?: Map<string, string>
   /** 显式声明 git 直载来源（如经 git URL 拉取后未走 registry 安装）——补充扫描 .git 探测 */
   gitDirect?: boolean
+  /** 装载签名门（M5-S28）：缺省 warn 模式全量启用——缺签横幅放行，enforce 显式切入 */
+  signature?: SignatureGateOptions
 }
 
 export interface LoadPluginsResult {
@@ -130,9 +135,9 @@ export interface LoadPluginsResult {
 const GIT_URL_RE = /^(?:git\+|git@|ssh:\/\/git@)/
 const CAR_W_GIT = 'CAR-W-GIT-DIRECT'
 const CAR_E = (stage: string, msg: string) => `CAR-E-${stage.toUpperCase()}: ${msg}`
-const STAGE_ORDER: LoadStage[] = ['discover', 'parse', 'validate', 'topo', 'register']
+const STAGE_ORDER: LoadStage[] = ['discover', 'verify', 'parse', 'validate', 'topo', 'register']
 
-/** 五阶段装配：discover → parse → validate → topo → register（任一 FAIL 短路，后续 SKIPPED） */
+/** 六阶段装配：discover → verify → parse → validate → topo → register（任一 FAIL 短路，后续 SKIPPED） */
 export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadPluginsResult> {
   const startedAtMs = Date.now()
   const startedTime = new Date(startedAtMs).toISOString()
@@ -180,7 +185,21 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadPlugins
     return finish([])
   }
 
-  // ===== 阶段 2：parse（parseManifest；manifest 取模块命名导出，缺失则按文件名合成） =====
+  // ===== 阶段 2：verify（装载前签名门——先于 parse 的 import()，模块执行前拦截；ADR-003 / DEC-1 ②） =====
+  const sig = opts.signature ?? {}
+  const sigOnCount = sig.onCount
+  for (const file of files) {
+    const g = verifyPluginFile(file, sig)
+    if (!g.allowed) {
+      sigOnCount?.('car_load_total', { result: 'failed' })
+      stages.push({ stage: 'verify', status: 'FAIL', error: { file, reason: g.error ?? 'CAR-E-SIG: rejected by signature gate' } })
+      return finish([])
+    }
+    if (g.warning) warnings.push(g.warning)
+  }
+  stages.push({ stage: 'verify', status: 'PASS' })
+
+  // ===== 阶段 3：parse（parseManifest；manifest 取模块命名导出，缺失则按文件名合成） =====
   const entries: DiscoveredEntry[] = []
   for (const file of files) {
     try {
@@ -203,7 +222,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadPlugins
   const manifests: Manifest[] = parsed.map(p => p.manifest)
   stages.push({ stage: 'parse', status: 'PASS' })
 
-  // ===== 阶段 3：validate（peer 冲突链；豁免需 reason → 告警留痕） =====
+  // ===== 阶段 4：validate（peer 冲突链；豁免需 reason → 告警留痕） =====
   const installed = opts.installedVersions ?? new Map<string, string>()
   for (const m of manifests) installed.set(m.name, m.version)
   const conflicts: PeerConflictChain[] = []
@@ -231,7 +250,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadPlugins
   if (exemptedAny) warnings.push(`CAR-W-PEER-EXEMPT: peer 冲突经 manifest.peerPolicyOverride 显式豁免（${exemptDetail.join('; ')}）——reason 已声明，审计留痕`)
   stages.push({ stage: 'validate', status: 'PASS' })
 
-  // ===== 阶段 4：topo（peer 依赖边 → Kahn 分层拓扑排序；环 = 显式报错） =====
+  // ===== 阶段 5：topo（peer 依赖边 → Kahn 分层拓扑排序；环 = 显式报错） =====
   try {
     ordered = topoSort(manifests)
   } catch (e) {
@@ -240,7 +259,7 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadPlugins
   }
   stages.push({ stage: 'topo', status: 'PASS' })
 
-  // ===== 阶段 5：register（mountPlugin 按拓扑序装配；重名 = 显式冲突 + 冲突链定位） =====
+  // ===== 阶段 6：register（mountPlugin 按拓扑序装配；重名 = 显式冲突 + 冲突链定位） =====
   const plugins: LoadedPlugin[] = []
   const seenNames = new Set<string>()
   for (const m of ordered) {
@@ -254,6 +273,8 @@ export async function loadPlugins(opts: LoadPluginsOptions): Promise<LoadPlugins
     seenNames.add(m.name)
     try {
       plugins.push(await mountPlugin({ file, manifest: m, reloadEpoch: epoch }))
+      // S17 采集面：load_total(ok) 逐插件计数（unsigned 占比分母；零内容 labels）
+      sigOnCount?.('car_load_total', { result: 'ok' })
     } catch (e) {
       stages.push({ stage: 'register', status: 'FAIL', error: { file, reason: (e as Error).message } })
       return finish(plugins)

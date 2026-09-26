@@ -121,10 +121,14 @@ node --experimental-transform-types --test test/*.spec.ts
 | `src/cli.ts` session 扩展 + `src/session/log.ts` | M7：car session export（SQ-06 全流程：断链中止 + 取证包落盘 + 读回重验四重 + 离线自证 + --zstd 物理布局双锚点登记）/ rebuild-index / run 全程逐事件 fsync（「先落日志后放行」物理兑现）+ attachSink + loadSessionLog 格式层接入 + deriveSessionId（修路径当 sessionId 旧账） | §3.2.M7.2 导出行 |
 | `test/s22-m7-store-format.spec.ts` + `test/s23-m7-export-index.spec.ts` | M7 测试：8 + 7 个 test（sink 落盘/fail-fast/撕裂尾/格式三语义/zstd 压缩比 ≥3x 与缺席显式/export 离线自证/断链中止/索引幂等/errors 通道） | §3.2.M7 AC |
 
+| `src/load/sigGate.ts` + `src/load/report.ts` verify 阶段 | M5-S28 装载签名门接线：manifestHash = 插件入口文件裸字节 sha256 hex（`<file>.minisig` sidecar，被签消息 = hex 串 UTF-8 字节）+ 流水线五阶段→**六阶段**（discover→**verify**→parse→…，先于 import() 模块执行前拦截）+ `car run` 直载门 + `car reload` 透传 + `car_load_total`/`car_unsigned_confirmed` 生产计数 + `CAR_TRUST_ROOT`/`CAR_SIG_ENFORCE`/`CAR_UNSIGNED_ALLOW` env 通道 + unsignedAllow→confirmed=yes 豁免改写 + fp 指纹横幅 | ADR-003 追记、DEC-1 ②、S20 §5 复评行 |
+| `test/s24-signature-gate.spec.ts` | M5-S28 测试：8 个 test（warn 缺签横幅+fp+confirmed=no / unsignedAllow=yes 改写+横幅保留 / enforce 缺签 FAIL+空 plugins / 坏签名硬拒绝不可豁免 / 好签名静默 / load_total 分母 / reload 透传 / 单文件门+env 映射） | 全量 204 |
+
 ## M5 状态
 
 - **M5 收口（2026-09-12）**：三项 deferred 全部转正并验证——win32 sandbox spike 四判据自动断言全 PASS（S24/S25/S26）、JSON Schema→TS 深度参数渲染（dee4d67）、跨宿主 fork/resume（03c0fec）。全量 **156/156**。
 - 工具面 9→10（新增 `session_fork`）；`session_start` 增 importJsonl 导入路径；RC-3 冻结未生效（1.0-rc tag 未切），工具面契约变更合规登记。
+- **S28 收口（2026-09-26）**：**DEC-1 裁决 = ②**（warn + 《签名强制启用指南》组合发布 + RC-3 承诺显式降级；数据窗口 0 会话不满足切 enforce 前提，D-2 红线禁止无数据 enforce；宽限期 = 1.0 发布日 + 90 天，到期 enforce 默认值翻转为**计划内变更**——S20 §5 复评行归档）。配套工程同日收口：**装载签名门接线**——verifier 自 M2-S6（e11d23b）入库零生产调用点的缺口补齐（此前「已实装仅切默认值」口径经双向核查不成立，S20 §6 勘误登记）：loadPlugins 五阶段→六阶段（verify 先于 parse 的 import()，模块执行前拦截）+ car run 直载门 + car reload 透传 + car_load_total/car_unsigned_confirmed 生产计数 + manifestHash 指纹兜底实装 + CAR_TRUST_ROOT/CAR_SIG_ENFORCE/CAR_UNSIGNED_ALLOW env 通道。全量 **204（201 PASS + 3 能力门控 skip / 0 fail）**。S29 前置三修复（ce0bf65）：G-01 钉 tap reporter（Node 23 spec 默认致解析落空）/ G-03 豁免清单对齐 CI 权威版 / release.yml publish tag 动态化（1.0.0→latest，rc 保留指向 rc.1）。**GO-1 复跑达成：12 PASS / 1 DRY-RUN / 0 FAIL**（G-10 Release 实查挂 GO-7 token rotate 后全链验证收口）。
 
 ## M6 状态
 
@@ -144,11 +148,11 @@ node --experimental-transform-types --test test/*.spec.ts
 
 ## 状态
 
-- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ M6 179/179（2026-09-15 收口）｜ **M7 全量 195（192 PASS + 3 能力门控 skip，2026-09-19 收口）**
+- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ M6 179/179（2026-09-15 收口）｜ M7 全量 195（192 PASS + 3 能力门控 skip，2026-09-19 收口）｜ **M5-S28 装载签名门 全量 204（201 PASS + 3 skip，2026-09-26）**
 - **1.0.0-rc.1 已发布（2026-09-09）**：npm `@lqc123qwe/car-runtime@1.0.0-rc.1`（rc + latest 双 tag，SLSA provenance 在案）+ GitHub Release 6 制品；发布预演 **13 PASS / 0 DRY-RUN / 0 FAIL**（c762b72）。S22 GO 清单已全绿收口。
 - **轨道 A 三项全部完成**：E-1 WSL2 逃逸矩阵 **20/20 PASS 零逃逸**（2026-09-07，G-07 转 PASS）｜ E-3 远端发布通道 **13/13 全门禁 PASS**（2026-09-09，G-08/09/10 转 PASS）｜ E-2 Windows koffi FFI **四判据双环境全 PASS**（S24/S25/S26，2026-09-09~10；本机非提权 + windows-latest 提权 runner 双绿，CI 门禁已接入）。
 - **决策已闭环**：**T-1** enforce 阈值定稿 **A=5% / B=2% / C=30 会话** + 裁决**显式延期**（2026-09-09，S20 §5 归档；红线禁止以 warn 静默进 1.0）｜**T-4** MLPS-G1 定时导出维持部署方配套（2026-09-09，D-4 追记）｜**DEC-2** Windows CI 接入 / **DEC-3** 发布前 token rotate / **DEC-4** M3 预埋项纳入 1.0（均 2026-09-09 裁决）。
-- **1.0 唯一未闭环项 = DEC-1**（enforce 形态三选一，S28 复评）：前置为 S27 试点回收（登记表 ≥3 家 + E-6 GUI 实连 ≥1 家 + ≥30 会话）；复评时点 = 会话数 ≥30 或 1.0 发布前两周（先到为准）。**工程侧不存在待补的设计或代码缺口。**
+- **1.0 剩余链路（2026-09-26 更新）**：DEC-1 **已裁决 ②**（warn 形态，S20 §5 归档）｜ GO-7 token rotate（用户执行，清单已备；G-10 全链验证随 rotate 收口）｜ S29 发布编排（version 1.0.0 → 13 门禁复跑 → v1.0.0 Release 归档 → Actions publish 自动 latest）｜ S30 收口终验。GO-5 试点回收（登记表 ≥3 家 / E-6 实连 ≥1 家 / ≥30 会话）按 R-1 缓解路径由运营侧持续征集，**不再阻塞 ② 形态发布**。
 - M4 预埋项**已全部出清**：fork 跨宿主 / 深度参数渲染于 2026-09-12 转正（dee4d67 + 03c0fec）；定时导出经 T-4 裁决维持部署方配套。
 - **内核行为修复（S14 捕获）**：工具异常原会终止 turn（reason=error）——已修为「成对错误 toolResult 交回模型」（US-5/D5 语义：工具错误是结果而非 turn 中断），121 断言零回退。
 - **性能定标（回填）**：N2 首插件跑通 3ms（目标 ≤300s，余量 10 万倍）｜ Q-06 装配 20 插件 <1ms、serial 分发 1000 次 6ms、日志 1 万事件追加+哈希链 125ms、回放+校验 21ms ｜ QS-05 20 轮缓存击穿热重载 × 5 插件 P95 个位数 ms（目标 ≤800ms）。

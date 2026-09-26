@@ -5,6 +5,12 @@
  *  - 校验失败（有签名但不对）= 硬拒绝，不可配置放行
  *  - 签名缺失 = warn 模式告警放行（manifestHash 兜底）→ enforce 模式硬拒绝
  *  - Sigstore 轨不可达 = 回退静态轨；双轨皆败按缺失处理
+ *
+ * 接线登记（M5-S28，2026-09-26）：本模块自 S6 入库即为纯验签函数；装载路径接线由
+ * sigGate.ts（fs 层：文件指纹 + sidecar + env 配置）与 loadPlugins verify 阶段 /
+ * car run 直载门完成——verify 先于 parse 的 import()，模块执行前拦截。
+ * manifestHash 锚定口径 = sha256(插件入口文件裸字节) hex（被签消息 = hex 串 UTF-8 字节），
+ * 详见 sigGate.ts 头注释。本文件 API 面不变（s6/s17 契约冻结）。
  */
 import { verify, createPublicKey } from 'node:crypto'
 

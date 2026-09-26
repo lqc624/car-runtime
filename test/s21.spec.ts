@@ -45,7 +45,7 @@ test('M6-s21: 空目录 discover FAIL + 后续阶段 SKIPPED', async () => {
   await withTempDir('empty', async (dir) => {
     const { report } = await loadPlugins({ source: dir })
     assert.deepEqual(stageNames(report), [
-      'discover:FAIL', 'parse:SKIPPED', 'validate:SKIPPED', 'topo:SKIPPED', 'register:SKIPPED',
+      'discover:FAIL', 'verify:SKIPPED', 'parse:SKIPPED', 'validate:SKIPPED', 'topo:SKIPPED', 'register:SKIPPED',
     ])
     assert.match(stageOf(report, 'discover').error!.reason, /no \*\.ts plugin files found/)
   })
@@ -67,7 +67,7 @@ test('M6-s21: discover 排除规则——*.spec.ts / *.d.ts / 非 .ts 不进装�
     writeFileSync(join(dir, 'types.d.ts'), `export type X = 1\n`)
     writeFileSync(join(dir, 'notes.txt'), 'not a plugin')
     const { report, plugins, order } = await loadPlugins({ source: dir })
-    assert.deepEqual(stageNames(report), ['discover:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
+    assert.deepEqual(stageNames(report), ['discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
     assert.deepEqual(order.map(m => m.name), ['real'])
     assert.equal(plugins.length, 1)
   })
@@ -81,7 +81,7 @@ test('M6-s21: 模块导入失败（语法坏文件）→ parse FAIL CAR-E-PARSE 
     writeFileSync(bad, `export const manifest = { name: 'broken', version: '1.0.0' }\nexport default function( {\n`)
     const { report } = await loadPlugins({ source: bad })
     assert.deepEqual(stageNames(report), [
-      'discover:PASS', 'parse:FAIL', 'validate:SKIPPED', 'topo:SKIPPED', 'register:SKIPPED',
+      'discover:PASS', 'verify:PASS', 'parse:FAIL', 'validate:SKIPPED', 'topo:SKIPPED', 'register:SKIPPED',
     ])
     const parse = stageOf(report, 'parse')
     assert.match(parse.error!.file, /broken\.ts$/)
@@ -105,7 +105,7 @@ test('M6-s21: topo 依赖环 → topo FAIL CAR-E-DEPCYCLE + register SKIPPED', a
     makePlugin(dir, 'b.ts', { name: 'b', version: '1.0.0', peers: [{ peer: 'a', range: '^1.0.0' }] }, 'tb')
     const { report, plugins } = await loadPlugins({ source: dir })
     assert.deepEqual(stageNames(report), [
-      'discover:PASS', 'parse:PASS', 'validate:PASS', 'topo:FAIL', 'register:SKIPPED',
+      'discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:PASS', 'topo:FAIL', 'register:SKIPPED',
     ])
     assert.match(stageOf(report, 'topo').error!.reason, /CAR-E-DEPCYCLE/)
     assert.equal(plugins.length, 0)
@@ -118,7 +118,7 @@ test('M6-s21: 重复插件名 DUP → register FAIL CAR-E-DUP + 前缀阶段已�
     makePlugin(dir, 'two.ts', { name: 'dup', version: '2.0.0' }, 't2')
     const { report, plugins } = await loadPlugins({ source: dir })
     assert.deepEqual(stageNames(report), [
-      'discover:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:FAIL',
+      'discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:FAIL',
     ])
     const reg = stageOf(report, 'register')
     assert.match(reg.error!.reason, /CAR-E-DUP/)
@@ -134,7 +134,7 @@ test('M6-s21: erasable 违规（enum）→ register FAIL CAR-E-PTC + 文件定�
     writeFileSync(bad, `export const manifest = { name: 'ne', version: '1.0.0' }\nexport enum Mode { A = 'a' }\nexport default function apply(api) {}\n`)
     const { report } = await loadPlugins({ source: bad })
     assert.deepEqual(stageNames(report), [
-      'discover:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:FAIL',
+      'discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:FAIL',
     ])
     const reg = stageOf(report, 'register')
     assert.match(reg.error!.reason, /CAR-E-PTC/)
@@ -146,7 +146,7 @@ test('M6-s21: manifest 命名导出缺省 → 按文件名合成（name/version 
   await withTempDir('no-manifest', async (dir) => {
     writeFileSync(join(dir, 'anon.ts'), PLUGIN_BODY('t'))
     const { report, order } = await loadPlugins({ source: dir })
-    assert.deepEqual(stageNames(report), ['discover:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
+    assert.deepEqual(stageNames(report), ['discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
     assert.equal(order[0]!.name, 'anon')
     assert.equal(order[0]!.version, '0.0.1')
   })
@@ -161,7 +161,7 @@ test('M6-s21: 连续 3 次 reload——epoch 连续递增 1/2/3、history 累积
     for (const v of ['1.0.0', '1.1.0', '1.2.0']) {
       writeFileSync(file, `export const manifest = { name: 'hot', version: '${v}' }\n${PLUGIN_BODY(`tool-${v}`)}`)
       const { report, plugins } = await mgr.reload(file)
-      assert.deepEqual(stageNames(report), ['discover:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
+      assert.deepEqual(stageNames(report), ['discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
       assert.equal(plugins[0]!.manifest.version, v)
     }
     assert.equal(mgr.epoch, 3)
@@ -204,7 +204,7 @@ test('M6-s21: 并发 reload 基本不变量——epoch=2、history=2、终态实
     assert.equal(mgr.epoch, 2)
     assert.equal(mgr.history.length, 2)
     for (const r of [r1, r2]) {
-      assert.deepEqual(stageNames(r.report), ['discover:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
+      assert.deepEqual(stageNames(r.report), ['discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
     }
     assert.equal(mgr.instances.length, 1)
     assert.equal(mgr.instances[0]!.isInvalidated(), false, '终态实例必须可用（不被并发残留失效）')

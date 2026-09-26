@@ -28,20 +28,20 @@ function withTempDir(name: string, fn: (dir: string) => Promise<void> | void): P
 const stageOf = (r: LoadReportVO, s: string) => r.stages.find(x => x.stage === s)!
 const stageNames = (r: LoadReportVO) => r.stages.map(s => `${s.stage}:${s.status}`)
 
-// ==================== 五阶段加载报告 ====================
+// ==================== 六阶段加载报告 ====================
 
-test('M6: 五阶段成功路径——全 PASS + LoadReportVO 结构对齐 §3.2.M6.3 + 拓扑序装配', async () => {
+test('M6: 六阶段成功路径——全 PASS + LoadReportVO 结构对齐 §3.2.M6.3 + 拓扑序装配', async () => {
   await withTempDir('ok', async (dir) => {
     makePlugin(dir, 'dep-p.ts', { name: 'dep-p', version: '1.0.0' }, 'dep-tool')
     makePlugin(dir, 'consumer.ts', { name: 'consumer', version: '2.0.0', peers: [{ peer: 'dep-p', range: '^1.0.0' }] }, 'con-tool')
     const { report, plugins, order } = await loadPlugins({ source: dir })
-    // 结构逐字对齐：installId / startedTime(ISO) / durationMs / stages×5 / warnings
+    // 结构逐字对齐：installId / startedTime(ISO) / durationMs / stages×6 / warnings
     assert.match(report.installId, /^car-install-/)
     assert.equal(Number.isNaN(Date.parse(report.startedTime)), false)
     assert.equal(typeof report.durationMs, 'number')
     assert.ok(report.durationMs >= 0)
     assert.deepEqual(stageNames(report), [
-      'discover:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS',
+      'discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS',
     ])
     assert.ok(Array.isArray(report.warnings))
     // 拓扑序：provider（dep-p）先于 consumer
@@ -58,7 +58,7 @@ test('M6: manifest 失败短路——parse FAIL + 文件定位 + 后续阶段 SK
     makePlugin(dir, 'broken.ts', { name: 'broken', version: '^1.0.0' }, 't2') // 非精确 semver
     const { report } = await loadPlugins({ source: dir })
     assert.deepEqual(stageNames(report), [
-      'discover:PASS', 'parse:FAIL', 'validate:SKIPPED', 'topo:SKIPPED', 'register:SKIPPED',
+      'discover:PASS', 'verify:PASS', 'parse:FAIL', 'validate:SKIPPED', 'topo:SKIPPED', 'register:SKIPPED',
     ])
     const parse = stageOf(report, 'parse')
     assert.match(parse.error!.file, /broken\.ts$/)
@@ -72,7 +72,7 @@ test('M6: peer 冲突链定位——validate FAIL 附 conflicts（文件/区间/
     makePlugin(dir, 'consumer.ts', { name: 'consumer', version: '2.0.0', peers: [{ peer: 'dep-p', range: '^2.0.0' }] }, 't2')
     const { report } = await loadPlugins({ source: dir })
     assert.deepEqual(stageNames(report), [
-      'discover:PASS', 'parse:PASS', 'validate:FAIL', 'topo:SKIPPED', 'register:SKIPPED',
+      'discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:FAIL', 'topo:SKIPPED', 'register:SKIPPED',
     ])
     const conflicts = stageOf(report, 'validate').conflicts!
     assert.equal(conflicts.length, 1)
@@ -139,7 +139,7 @@ test('M6: 热重载——epoch 递增、旧句柄 invalidate 后报 CAR-INVALIDA
     assert.equal(mgr.epoch, 0)
     const r1 = await mgr.reload(file)
     assert.equal(mgr.epoch, 1)
-    assert.deepEqual(stageNames(r1.report), ['discover:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
+    assert.deepEqual(stageNames(r1.report), ['discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
     assert.equal(r1.plugins[0]!.manifest.version, '1.0.0')
     const host1: Array<{ name: string }> = []
     r1.plugins[0]!.bindCore({ registerTool: t => { host1.push(t) }, getRegisteredTools: () => host1 })
@@ -205,7 +205,7 @@ test('QS-05: 加载耗时基线——P95 ≤ 800ms（20 轮热重载五插件，
     const durations: number[] = []
     for (let i = 0; i < runs; i++) {
       const { report } = await mgr.reload(dir)
-      assert.deepEqual(stageNames(report), ['discover:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
+      assert.deepEqual(stageNames(report), ['discover:PASS', 'verify:PASS', 'parse:PASS', 'validate:PASS', 'topo:PASS', 'register:PASS'])
       durations.push(report.durationMs)
     }
     durations.sort((a, b) => a - b)
