@@ -124,6 +124,9 @@ node --experimental-transform-types --test test/*.spec.ts
 | `src/load/sigGate.ts` + `src/load/report.ts` verify 阶段 | M5-S28 装载签名门接线：manifestHash = 插件入口文件裸字节 sha256 hex（`<file>.minisig` sidecar，被签消息 = hex 串 UTF-8 字节）+ 流水线五阶段→**六阶段**（discover→**verify**→parse→…，先于 import() 模块执行前拦截）+ `car run` 直载门 + `car reload` 透传 + `car_load_total`/`car_unsigned_confirmed` 生产计数 + `CAR_TRUST_ROOT`/`CAR_SIG_ENFORCE`/`CAR_UNSIGNED_ALLOW` env 通道 + unsignedAllow→confirmed=yes 豁免改写 + fp 指纹横幅 | ADR-003 追记、DEC-1 ②、S20 §5 复评行 |
 | `test/s24-signature-gate.spec.ts` | M5-S28 测试：8 个 test（warn 缺签横幅+fp+confirmed=no / unsignedAllow=yes 改写+横幅保留 / enforce 缺签 FAIL+空 plugins / 坏签名硬拒绝不可豁免 / 好签名静默 / load_total 分母 / reload 透传 / 单文件门+env 映射） | 全量 204 |
 
+| `src/runtime-core/`（7 文件）+ `src/kernel` Context 根作用域 `effect()` + `src/dx/doctor.ts` keychain 行 | M8 运行时底座：types DTO（finishReason 不可变透传口径）/ llm.ts（AdapterRegistry 重复 id 显式报错 + withFinishReasonGuard 不可变守卫 + RuntimeCore Effect 可逆注册 + openai-compat SSE 适配器：TLS 强制 / 未映射 finish fail-visible / 首块前重试 ≤2 指数退避 / 凭据门 resolve→reveal→Bearer / A080001 首块前传播）/ credentials（Keychain→env，A080001 引导 car doctor）/ redaction（redact + StreamRedactor 跨 chunk 驻留）/ telemetry（OTel 门面默认关三原则）/ chatStep（SQ-07：N1 前置断言→投影请求→流消费→assistant 落 M7→toolUse 交 M4）/ errors（CarM8Error 双轨码） | §3.2.M8、SQ-07、O-11/O-13/O-14 |
+| `test/s25-m8-runtime-core.spec.ts` | M8 测试：27 个 test（注册表/finishReason 守卫/Effect 可逆/凭据三层/脱敏/遥测双路径/openai-compat SSE·重试·凭据门/chatStep 集成六面/SQ-07 端到端） | §3.2.M8 AC |
+
 ## M5 状态
 
 - **M5 收口（2026-09-12）**：三项 deferred 全部转正并验证——win32 sandbox spike 四判据自动断言全 PASS（S24/S25/S26）、JSON Schema→TS 深度参数渲染（dee4d67）、跨宿主 fork/resume（03c0fec）。全量 **156/156**。
@@ -147,9 +150,14 @@ node --experimental-transform-types --test test/*.spec.ts
 - **CI 能力真跑（防幽灵门禁）**：j02/j03/j04 测试命令直挂 `--experimental-sqlite`（22.5+ 带 flag 引入）；zstd 为 **22.15+ 原生内置（无 CLI flag**，Stability: 1 实验标记），22.19 原生在场直跑。排障两轮（run 35451413014/35451612564）：①node 运行时 flag 不能走 `NODE_OPTIONS`（白名单拒绝 + job 级 env 炸 actions 自身 node24），必须直挂命令行；②「not allowed in NODE_OPTIONS」是通用拒绝文案、**不代表 flag 存在**——`--experimental-zstd` 从未存在过。zstd 在场/缺席双路径各由在场/缺席环境实跑（skip 显式登记非静默）。**CI 收官（run 35452486131）：16/16 全绿**，三平台 195 用例实跑（zstd 在场路径含 ≥3x 压缩比断言 CI 首次实测通过）。
 - 口径备注：§3.2.M7.2 的 `--session id` 形态以 index（sessionId→file 映射）为底座登记后续增强，export 本迭代以文件路径为入口（与 verify/replay 形态一致）；运行时 append 异步索引自动更新登记后续（缺失由 rebuild 兜底，异步可容忍语义自洽）；deriveMessages 的 roleConsistencyChecked 在 v1 无消息改写面，登记 N/A。详见 `car-docs/10-内核v1/M7-会话日志与审计收口.md`。
 
+## M8 状态
+
+- **M8 收口（2026-09-26）**：§3.2.M8 运行时底座（模型接入 A4 + 遥测 A5）收口——WIP 七文件（09-19 产出）经检查点 `93b3938` 入库（kernel 根作用域 effect() 补齐宿主侧 Effect 生命周期 + doctor keychain 通道）后，本迭代交付：**M8-BUG-1 修复**（AL-05 兜底 sawFinish 条件化——成功流零 error chunk，缺失仍显式报错）+ openai-compat SSE/重试/凭据门 8 测试 + chatStep SQ-07 集成 7 测试。全量 **231（228 PASS + 3 能力门控 skip / 0 fail）** + tsc strict 0 错（CI 首跑揪出 93b3938 遗留 strict 错误，`9898563` 修复）+ secrets-scan 97 文件 0 命中（93b3938 夹具命中已修——上次会话 PASS 声明系伪造渲染产物）。**CI 收官（run 36237615992）：16/16 全绿**。
+- 口径备注：chatStep 库面已备已测，**runTurn（M4）侧消费接线登记后续**（「已实装」口径不外推）；openai-compat 为参考适配器（ACL 接口面已钉死）；遥测 OTLP 最小实现（无重试/采样）。详见 `car-docs/10-内核v1/M8-运行时底座收口.md`。
+
 ## 状态
 
-- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ M6 179/179（2026-09-15 收口）｜ M7 全量 195（192 PASS + 3 能力门控 skip，2026-09-19 收口）｜ **M5-S28 装载签名门 全量 204（201 PASS + 3 skip，2026-09-26）**
+- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ M6 179/179（2026-09-15 收口）｜ M7 全量 195（192 PASS + 3 能力门控 skip，2026-09-19 收口）｜ **M5-S28 装载签名门 全量 204（201 PASS + 3 skip，2026-09-26）** ｜ **M8 运行时底座 全量 231（228 PASS + 3 skip，2026-09-26 收口，§3.2 八模块全部收口）**
 - **1.0.0 正式发布（2026-09-26，S29/S30）**：npm `@lqc123qwe/car-runtime@1.0.0` 在架——**dist-tag latest → 1.0.0，rc 保留指向 1.0.0-rc.1**（§1.1 口径）；SLSA provenance（Actions OIDC，透明日志在案）；GitHub Release v1.0.0 六资产（tgz/bundle/SHA256SUMS/SBOM/审计/公钥）；**post-publish 全链 13 PASS / 0 DRY-RUN / 0 FAIL** + 外部验证者等价检查（Release 实下载件 SHA256 MATCH + cosign Verified OK）。**宽限期时钟：2026-09-26 起算，2026-12-25 到期 verifier 默认值 warn→enforce 翻转（计划内变更）**。终验报告：`car-docs/10-内核v1/M5-S30-1.0收口终验报告.md`。发布工程事件：j16 首跑 E403（npm 2FA 策略 vs granular token 无 bypass——清单预设回退路径兑现）→ bypass token re-run 绿；G-09 期望 tag 动态化（`4c84b17`）在真实发布兑现价值。
 - **1.0.0-rc.1 已发布（2026-09-09）**：npm `@lqc123qwe/car-runtime@1.0.0-rc.1`（rc + latest 双 tag，SLSA provenance 在案）+ GitHub Release 6 制品；发布预演 **13 PASS / 0 DRY-RUN / 0 FAIL**（c762b72）。S22 GO 清单已全绿收口。
 - **轨道 A 三项全部完成**：E-1 WSL2 逃逸矩阵 **20/20 PASS 零逃逸**（2026-09-07，G-07 转 PASS）｜ E-3 远端发布通道 **13/13 全门禁 PASS**（2026-09-09，G-08/09/10 转 PASS）｜ E-2 Windows koffi FFI **四判据双环境全 PASS**（S24/S25/S26，2026-09-09~10；本机非提权 + windows-latest 提权 runner 双绿，CI 门禁已接入）。
