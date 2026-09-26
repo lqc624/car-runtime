@@ -96,7 +96,7 @@ import { createTelemetryFacade } from '../src/runtime-core/telemetry.ts'
 import { readFileSync } from 'node:fs'
 
 // F12 三层检测（L2 熵 ≥3.5）下保证命中：连接串形态豁免熵检（s7 同源判据）；mongodb 亦在 M8 流式锚点表内
-const SECRET = 'mongodb://car:S3cretPw9xK2mQ7@cluster0.abc.mongodb.net/db'
+const SECRET = 'mongodb://' + 'car:S3cretPw9xK2mQ7@cluster0.abc.mongodb.net/db'
 
 test('M8: keychainService 命名空间 + 平台通道探测（win32 读通道缺席显式降级）', () => {
   assert.equal(keychainService('openai'), 'car-runtime/openai')
@@ -254,3 +254,346 @@ async function drain(it: AsyncIterable<unknown>): Promise<unknown[]> {
   for await (const c of it) out.push(c)
   return out
 }
+// ==================== 增量 3 测试体：openai-compat SSE/重试 + chatStep 集成（SQ-07） ====================
+
+import type { CredentialService } from '../src/runtime-core/credentials.ts'
+import { credentialMissing } from '../src/runtime-core/errors.ts'
+
+test('M8: openai-compat SSE 成功流——零 error chunk（M8-BUG-1 捕获器：AL-05 兜底不得污染已定格流）', async () => {
+  const adapter = createOpenAICompatAdapter({
+    baseUrl: 'https://api.test/v1',
+    fetchImpl: (async () => sseResponse([
+      dataLine({ choices: [{ delta: { content: 'he' } }] }),
+      dataLine({ choices: [{ delta: { content: 'y' } }] }),
+      ...OK_DONE,
+    ])) as typeof fetch,
+  })
+  const out = await drain(adapter.chat({ model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: [] }))
+  assert.equal(out.length, 3, 'delta + delta + finish：无任何追加 error chunk')
+  assert.equal((out[0] as LlmChunk).delta, 'he')
+  assert.equal((out[out.length - 1] as LlmChunk).finishReason, 'stop')
+  assert.ok(out.every(c => (c as LlmChunk).finishReason !== 'error'), '成功流零 error chunk')
+})
+
+test('M8: openai-compat——TLS 强制：http baseUrl 构造即抛 CAR-E-LLM-TLS', () => {
+  assert.throws(() => createOpenAICompatAdapter({ baseUrl: 'http://api.test/v1' }), /CAR-E-LLM-TLS/)
+})
+
+test('M8: openai-compat SSE——tool_calls 增量解析，finish_reason=tool_calls → toolUse 映射', async () => {
+  const adapter = createOpenAICompatAdapter({
+    baseUrl: 'https://api.test/v1',
+    fetchImpl: (async () => sseResponse([
+      dataLine({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'get_weather', arguments: '{"city":' } }] } }] }),
+      dataLine({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"北京"}' } }] } }] }),
+      dataLine({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+      'data: [DONE]\n\n',
+    ])) as typeof fetch,
+  })
+  const out = await drain(adapter.chat({ model: 'm', messages: [{ role: 'user', content: 'w' }], tools: [] }))
+  assert.equal(out.length, 3, '两条 toolCallDelta + 一条 finish')
+  assert.equal((out[0] as LlmChunk).toolCallDelta?.name, 'get_weather', '首条 toolCallDelta 携带 id/name/args 首段')
+  assert.equal((out[0] as LlmChunk).toolCallDelta?.argumentsDelta, '{"city":')
+  assert.equal((out[1] as LlmChunk).toolCallDelta?.argumentsDelta, '"北京"}', '次条续传 args 增量')
+  const fin = out[out.length - 1] as LlmChunk
+  assert.equal(fin.finishReason, 'toolUse', 'tool_calls → toolUse（FINISH_MAP）')
+  assert.equal(fin.toolCallDelta, undefined, 'finish chunk 不混载 toolCallDelta')
+})
+
+test('M8: openai-compat——未映射 finish_reason fail-visible：error chunk + raw 在 message（禁静默改写）', async () => {
+  const adapter = createOpenAICompatAdapter({
+    baseUrl: 'https://api.test/v1',
+    fetchImpl: (async () => sseResponse([
+      dataLine({ choices: [{ delta: {}, finish_reason: 'weird_signal' }] }),
+      'data: [DONE]\n\n',
+    ])) as typeof fetch,
+  })
+  const out = await drain(adapter.chat({ model: 'm', messages: [{ role: 'user', content: 'x' }], tools: [] }))
+  assert.equal(out.length, 1, 'fail-visible 单 chunk（sawFinish 命中，无二次兜底）')
+  const c = out[0] as LlmChunk
+  assert.equal(c.finishReason, 'error')
+  assert.equal(c.error?.code, 'B080001')
+  assert.match(c.error?.message ?? '', /weird_signal/, '原始终止信号附在 message（不吞没）')
+})
+
+test('M8: openai-compat 重试——首块前 5xx 重试 ≤2 次、指数退避注入可观测、成功续流', async () => {
+  let attempts = 0
+  const sleeps: number[] = []
+  const adapter = createOpenAICompatAdapter({
+    baseUrl: 'https://api.test/v1',
+    retries: 2,
+    backoffMs: [7, 13],
+    sleep: async ms => { sleeps.push(ms) },
+    fetchImpl: (async () => {
+      attempts++
+      if (attempts < 3) return new Response('boom', { status: 500 })
+      return sseResponse([dataLine({ choices: [{ delta: { content: 'ok' } }] }), ...OK_DONE])
+    }) as typeof fetch,
+  })
+  const out = await drain(adapter.chat({ model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: [] }))
+  assert.equal(attempts, 3, '2 次重试后第 3 次成功')
+  assert.deepEqual(sleeps, [7, 13], '退避按序注入（1s/2s 基线的缩短注入形态）')
+  assert.equal((out[0] as LlmChunk).delta, 'ok')
+  assert.equal((out[out.length - 1] as LlmChunk).finishReason, 'stop')
+})
+
+test('M8: openai-compat 重试耗尽——B080001 CarM8Error（retryable=true，尝试计数入 message）', async () => {
+  let attempts = 0
+  const sleeps: number[] = []
+  const adapter = createOpenAICompatAdapter({
+    baseUrl: 'https://api.test/v1',
+    retries: 1,
+    backoffMs: [5],
+    sleep: async ms => { sleeps.push(ms) },
+    fetchImpl: (async () => { attempts++; return new Response('down', { status: 503 }) }) as typeof fetch,
+  })
+  await assert.rejects(
+    () => drain(adapter.chat({ model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: [] })),
+    (e: unknown) => {
+      assert.ok(e instanceof CarM8Error, '重试耗尽 = CarM8Error（禁裸 Error）')
+      const err = e as CarM8Error
+      assert.equal(err.code, 'B080001')
+      assert.equal(err.slug, 'CAR-E-LLM-UNREACHABLE')
+      assert.equal(err.retryable, true)
+      assert.match(err.message, /尝试 2\/2/)
+      return true
+    },
+  )
+  assert.equal(attempts, 2, 'retries=1 → 共 2 次尝试')
+  assert.deepEqual(sleeps, [5], '耗尽前退避一次')
+})
+
+test('M8: openai-compat——4xx 业务错不重试：单条 error chunk 收口（凭据不进错误路径）', async () => {
+  let attempts = 0
+  const adapter = createOpenAICompatAdapter({
+    baseUrl: 'https://api.test/v1',
+    fetchImpl: (async () => {
+      attempts++
+      return new Response(JSON.stringify({ error: { message: 'bad key' } }), { status: 401 })
+    }) as typeof fetch,
+  })
+  const out = await drain(adapter.chat({ model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: [] }))
+  assert.equal(attempts, 1, '4xx 不重试（§3.5.4 重试条件全集）')
+  assert.equal(out.length, 1)
+  const c = out[0] as LlmChunk
+  assert.equal(c.finishReason, 'error')
+  assert.equal(c.error?.code, 'B080001')
+  assert.match(c.error?.message ?? '', /401/)
+  assert.doesNotMatch(c.error?.message ?? '', /sk-/, 'Bearer 值不入错误信息')
+})
+
+test('M8: openai-compat——流中途失败不重试（已消费 chunk 不可重放）→ error chunk 收口', async () => {
+  let attempts = 0
+  const adapter = createOpenAICompatAdapter({
+    baseUrl: 'https://api.test/v1',
+    retries: 2,
+    backoffMs: [5, 5],
+    sleep: async () => {},
+    fetchImpl: (async () => {
+      attempts++
+      const enc = new TextEncoder()
+      let pulled = 0
+      const stream = new ReadableStream<Uint8Array>({
+        pull(c) {
+          pulled++
+          if (pulled === 1) c.enqueue(enc.encode(dataLine({ choices: [{ delta: { content: 'part' } }] })))
+          else c.error(new Error('connection reset'))
+        },
+      })
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as typeof fetch,
+  })
+  const out = await drain(adapter.chat({ model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: [] }))
+  assert.equal(attempts, 1, '流中途失败不可重放（重试不产生额外副作用）')
+  assert.equal(out.length, 2, '已消费 delta + error 收口')
+  assert.equal((out[0] as LlmChunk).delta, 'part')
+  const last = out[out.length - 1] as LlmChunk
+  assert.equal(last.finishReason, 'error')
+  assert.equal(last.error?.code, 'B080001')
+  assert.match(last.error?.message ?? '', /connection reset/)
+})
+
+test('M8: openai-compat 凭据门——resolve→reveal 注入 Bearer；A080001 首块前传播且 fetch 不发', async () => {
+  const calls: string[] = []
+  const cred = {
+    resolve: (provider: string) => { calls.push('resolve:' + provider); return { provider, source: 'keychain', origin: 'car-runtime/openai' } },
+    reveal: (ref: { provider: string }) => { calls.push('reveal:' + ref.provider); return 'sk-test-secret-value' },
+  } as unknown as CredentialService
+  let sawAuth = ''
+  const adapter = createOpenAICompatAdapter({
+    baseUrl: 'https://api.test/v1',
+    provider: 'openai',
+    credentials: cred,
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      sawAuth = String((init?.headers as Record<string, string>)?.authorization ?? '')
+      return sseResponse(OK_DONE)
+    }) as typeof fetch,
+  })
+  const out = await drain(adapter.chat({ model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: [] }))
+  assert.deepEqual(calls, ['resolve:openai', 'reveal:openai'], 'resolve → reveal 顺序（SQ-07 #3）')
+  assert.equal(sawAuth, 'Bearer sk-test-secret-value')
+  assert.equal((out[out.length - 1] as LlmChunk).finishReason, 'stop')
+
+  // 凭据全落空：A080001 首块前抛出（CarM8Error，不重试，userHint 引导 car doctor），fetch 零发出
+  const missing = {
+    resolve: () => { throw credentialMissing('openai', ['keychain', 'env']) },
+    reveal: () => { throw new Error('不应走到 reveal') },
+  } as unknown as CredentialService
+  let fetched = 0
+  const adapter2 = createOpenAICompatAdapter({
+    baseUrl: 'https://api.test/v1',
+    provider: 'openai',
+    credentials: missing,
+    fetchImpl: (async () => { fetched++; return sseResponse(OK_DONE) }) as typeof fetch,
+  })
+  await assert.rejects(
+    () => drain(adapter2.chat({ model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: [] })),
+    (e: unknown) => {
+      assert.ok(e instanceof CarM8Error)
+      assert.equal((e as CarM8Error).code, 'A080001')
+      assert.equal((e as CarM8Error).retryable, false, 'A080001 不重试')
+      assert.match((e as CarM8Error).userHint ?? '', /car doctor/, '用户文案引导 car doctor')
+      return true
+    },
+  )
+  assert.equal(fetched, 0, '凭据缺失不发请求')
+})
+
+// ---------- chatStep 集成（SQ-07 逐行） ----------
+
+test('M8: chatStep 快乐路径——投影请求 → 流式消费 → assistant 落 M7 → stop 交 M4', async () => {
+  const log = new SessionLog('S-m8chat')
+  log.append('user', 'user', 't1', '天气如何？')
+  log.snapshotModelRequest()
+  const core = new RuntimeCore()
+  core.registerLlmAdapter({
+    id: 'openai-compat',
+    async *chat(req: LlmRequest) {
+      assert.deepEqual(req.messages, [{ role: 'user', content: '天气如何？' }], '请求消息 = deriveMessages 投影（Model-visible means logged）')
+      assert.equal(req.metadata?.sessionId, 'S-m8chat', 'metadata 携带 sessionId/turnId/traceId')
+      assert.equal(req.metadata?.turnId, 't1')
+      yield { delta: '北京晴，' }
+      yield { delta: '26°C' }
+      yield { finishReason: 'stop' }
+    },
+  } as LlmAdapter)
+  const step = await chatStep({ core, log, turnId: 't1', model: 'gpt-test', tools: [] })
+  assert.equal(step.stopReason, 'stop')
+  assert.equal(step.text, '北京晴，26°C')
+  assert.equal(step.secretsRedacted, 0)
+  assert.equal(log.events.length, 2, 'user + assistant 两事件')
+  const ev = log.events[log.events.length - 1]!
+  assert.equal(ev.kind, 'assistant')
+  assert.equal(ev.actor, 'model')
+  assert.equal(ev.payload, '北京晴，26°C', 'assistant 文本落 M7')
+  assert.equal(ev.meta?.secretsRedacted, 0, '计数留痕 meta（S15 同名口径）')
+})
+
+test('M8: chatStep 脱敏——流内密钥经 StreamRedactor 遮蔽后落 M7（零明文）+ 兜底复扫计数', async () => {
+  const SECRET = 'sk-' + 'a1b2c3d4e5f6'.repeat(2) // 运行时拼接：源文件不含密钥形字面量（secrets-scan 纪律）
+  const log = new SessionLog('S-m8redact')
+  log.append('user', 'user', 't2', '帮我看看')
+  log.snapshotModelRequest()
+  const core = new RuntimeCore()
+  core.registerLlmAdapter({
+    id: 'openai-compat',
+    async *chat() {
+      yield { delta: '你的 key 是 ' }
+      yield { delta: SECRET }
+      yield { delta: ' 请轮换' }
+      yield { finishReason: 'stop' }
+    },
+  } as LlmAdapter)
+  const step = await chatStep({ core, log, turnId: 't2', model: 'm', tools: [] })
+  assert.equal((step.text ?? '').includes(SECRET), false, '结果文本零明文')
+  assert.equal(step.secretsRedacted, 0, '流式遮蔽生效 → 兜底复扫零残留（>0 = 边界逃逸审计信号）')
+  const ev = log.events[log.events.length - 1]!
+  assert.equal(JSON.stringify(ev.payload).includes(SECRET), false, '落 M7 前已遮蔽')
+})
+
+test('M8: chatStep——N1 失守显式拒绝（快照与投影失配 = 带病请求不发模型）', async () => {
+  const log = new SessionLog('S-m8n1')
+  log.append('user', 'user', 't3', 'q')
+  log.snapshotModelRequest()
+  ;(log as { events: unknown[] }).events.splice(0, 1) // 测试注入：前缀漂移（重放/篡改形态）
+  const core = new RuntimeCore()
+  let called = false
+  core.registerLlmAdapter({
+    id: 'openai-compat',
+    async *chat() { called = true; yield { finishReason: 'stop' } },
+  } as LlmAdapter)
+  await assert.rejects(() => chatStep({ core, log, turnId: 't3', model: 'm', tools: [] }), /CAR-E-N1.*atSeq=1/)
+  assert.equal(called, false, 'N1 失守不发出模型请求')
+})
+
+test('M8: chatStep——length 收口：半截 args 不解析（ADR-001），truncatedTools 只有名字', async () => {
+  const log = new SessionLog('S-m8len')
+  log.append('user', 'user', 't4', 'q')
+  log.snapshotModelRequest()
+  const core = new RuntimeCore()
+  core.registerLlmAdapter({
+    id: 'openai-compat',
+    async *chat() {
+      yield { toolCallDelta: { index: 0, id: 'call_9', name: 'run_query', argumentsDelta: '{"sql": "SE' } }
+      yield { finishReason: 'length' }
+    },
+  } as LlmAdapter)
+  const step = await chatStep({ core, log, turnId: 't4', model: 'm', tools: [] })
+  assert.equal(step.stopReason, 'length')
+  assert.deepEqual(step.truncatedTools, [{ id: 'call_9', tool: 'run_query' }])
+  assert.equal(step.toolCalls, undefined, 'length 不解析 args')
+})
+
+test('M8: chatStep——finishReason error/aborted → B080001 抛出（BD-04 收口由 runTurn 承接）', async () => {
+  const log = new SessionLog('S-m8err')
+  log.append('user', 'user', 't5', 'q')
+  log.snapshotModelRequest()
+  const core = new RuntimeCore()
+  core.registerLlmAdapter({
+    id: 'openai-compat',
+    async *chat() {
+      yield { delta: 'x' }
+      yield { finishReason: 'error', error: { code: 'B080001', message: 'provider 内部错误' } }
+    },
+  } as LlmAdapter)
+  await assert.rejects(
+    () => chatStep({ core, log, turnId: 't5', model: 'm', tools: [] }),
+    (e: unknown) => {
+      assert.ok(e instanceof CarM8Error)
+      assert.equal((e as CarM8Error).code, 'B080001')
+      assert.match((e as CarM8Error).message, /provider 内部错误/, 'errorDetail 随异常携带')
+      return true
+    },
+  )
+  // aborted 同映射：'aborted' → 'error' → 同收口
+  const log2 = new SessionLog('S-m8abort')
+  log2.append('user', 'user', 't5b', 'q')
+  log2.snapshotModelRequest()
+  const core2 = new RuntimeCore()
+  core2.registerLlmAdapter({ id: 'openai-compat', async *chat() { yield { finishReason: 'aborted' } } } as LlmAdapter)
+  await assert.rejects(() => chatStep({ core: core2, log: log2, turnId: 't5b', model: 'm', tools: [] }), /CAR-E-LLM-UNREACHABLE/)
+})
+
+test('M8: SQ-07 端到端——openai-compat SSE tool_calls → chatStep 聚合解析 → toolUse 交 M4', async () => {
+  const log = new SessionLog('S-m8sq07')
+  log.append('user', 'user', 't6', '北京天气？')
+  log.snapshotModelRequest()
+  const adapter = createOpenAICompatAdapter({
+    baseUrl: 'https://api.test/v1',
+    fetchImpl: (async () => sseResponse([
+      dataLine({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'get_weather', arguments: '{"city":' } }] } }] }),
+      dataLine({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"北京"}' } }] } }] }),
+      dataLine({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+      'data: [DONE]\n\n',
+    ])) as typeof fetch,
+  })
+  const core = new RuntimeCore()
+  core.registerLlmAdapter(adapter)
+  const step = await chatStep({
+    core, log, turnId: 't6', model: 'gpt-4o',
+    tools: [{ name: 'get_weather', declaredSideEffect: 'readonly' }],
+  })
+  assert.equal(step.stopReason, 'toolUse')
+  assert.deepEqual(step.toolCalls, [{ id: 'call_1', tool: 'get_weather', args: { city: '北京' } }], '跨 chunk args 聚合后整体解析')
+  assert.equal(step.secretsRedacted, 0)
+  assert.equal(log.events.length, 1, '空文本不产 assistant 事件；toolCall 事件归 runTurn（本层不重复）')
+})

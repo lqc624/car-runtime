@@ -265,12 +265,18 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
             return
           }
           if (!res.body) throw new Retryable('响应无 body 流')
+          let sawFinish = false
           for await (const chunk of parseSseStream(res.body)) {
             if (!firstByteSeen) { firstByteSeen = true; clearTimeout(firstByteTimer) }
+            if (chunk.finishReason !== undefined) sawFinish = true
             yield chunk
           }
-          // 流自然结束但未给 finishReason = 异常终止（AL-05 口径：缺失显式化，禁吞没）
-          yield { finishReason: 'error', error: { code: 'B080001', message: '流结束未携带 finish_reason（AL-05）' } }
+          // 流自然结束但未给 finishReason = 异常终止（AL-05 口径：缺失显式化，禁吞没）；
+          // 已携带 finishReason 的流原样收口——兜底不得追加（M8-BUG-1：无条件 error chunk
+          // 会污染成功流并触发 finishReason 守卫冲突；成功流零 error chunk 由 s25 断言钉死）
+          if (!sawFinish) {
+            yield { finishReason: 'error', error: { code: 'B080001', message: '流结束未携带 finish_reason（AL-05）' } }
+          }
           return
         } catch (e) {
           const beforeFirstByte = !firstByteSeen
