@@ -18,6 +18,12 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org/
       - name: Publish to npm with provenance
-        run: npm publish --provenance --tag rc
+        # dist-tag 按版本形态动态选择：prerelease（如 1.0.0-rc.1）→ rc；稳定版（1.0.0）→ latest。
+        # M5 §1.1 口径：1.0 发布时 latest→1.0.0，rc tag 保留指向 rc.1 不回指——稳定版禁止 --tag rc。
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if echo "$VERSION" | grep -q -- '-'; then TAG=rc; else TAG=latest; fi
+          echo "version=$VERSION -> dist-tag=$TAG"
+          npm publish --provenance --tag "$TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -42,16 +42,23 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
 // ── 阶段 1：PR 门禁（int）──
 {
   const stage = 'S1-PR 门禁'
-  const out = execSync('node --experimental-transform-types --test test/*.spec.ts', { cwd: ROOT, encoding: 'utf-8' })
+  // reporter 钉死 tap：非 TTY 默认 reporter 随 Node 版本漂移（23.x 输出 spec 格式，正则解析不到 # pass/# fail）
+  const out = execSync('node --experimental-transform-types --test --test-reporter=tap test/*.spec.ts', { cwd: ROOT, encoding: 'utf-8' })
   const pass = /# pass (\d+)/.exec(out)?.[1]
   const fail = /# fail (\d+)/.exec(out)?.[1]
   record(stage, 'G-01 单测全绿', fail === '0', `${pass} pass / ${fail} fail`)
   record(stage, 'G-02 N1 日志不变量断言', out.includes('48/48') || fail === '0', 'assertModelVisibleLogged 内嵌于测试套件')
   // 密钥扫描（gitleaks 等价简化规则集：真实 CI 用 gitleaks 全量规则）
-  // 豁免清单：secrets 检测规则定义与标定基准集（文件本身即凭据模式库，命中属预期）；
-  // 豁免须显式列文件路径（非目录级通配），豁免清单变更需评审（M2-S10 口径）
+  // 豁免清单与 scripts/secrets-scan.ts（CI 权威版）保持同步：规则库 + E-5 万级基准集生成器
+  // （内含仿真密钥模板，命中属预期）+ 对应标定 spec；豁免须显式列文件路径（M2-S10 口径）。
+  // 同步失守教训：E-5 入库时只扩了 CI 清单，本地 G-03 漏扩 → 复跑误 FAIL（2026-09-26 已对齐）
   const secretPatterns = [/sk-[A-Za-z0-9]{16,}/, /ghp_[A-Za-z0-9]{20,}/, /BEGIN (RSA |EC )?PRIVATE KEY/, /AKIA[A-Z0-9]{12,}/]
-  const scanExempt = (f: string) => f.replaceAll('\\', '/').endsWith('src/security/secrets.ts') || f.replaceAll('\\', '/').endsWith('test/s7.spec.ts')
+  const scanExempt = (f: string) => {
+    const n = f.replaceAll('\\', '/')
+    return /\/src\/security\/secrets(\.ts|-baseline\.ts)$/.test(n)
+      || /\/test\/s7(b-baseline)?\.spec\.ts$/.test(n)
+      || /\/scripts\/secrets-baseline\.ts$/.test(n)
+  }
   let hits = 0
   let scanned = 0
   for (const f of [...walk(join(ROOT, 'src'), '.ts'), ...walk(join(ROOT, 'test'), '.ts')]) {
