@@ -5,6 +5,8 @@
  *  - 凭据检查只探存在性、绝不打印值（secrets 红线：值入日志即泄露面）
  *  - 连通性检查网络不可达 = 显式 SKIPPED 而非 FAIL——测试环境必须可离线通过（不失败）
  */
+import { CredentialService } from '../runtime-core/credentials.ts'
+
 export interface CredentialCheck {
   name: string
   envVar: string
@@ -34,6 +36,11 @@ export interface ConnectivityResult {
   status: 'PASS' | 'SKIPPED'
   detail: string
   latencyMs: number
+}
+
+/** M8 增强：keychain 通道状态（模型凭据读取面，§3.2.M8.2 凭据行）——能力探测口径，缺席显式降级不静默；离线可过 */
+export function doctorKeychain(opts: { platform?: NodeJS.Platform } = {}): { available: boolean; note: string } {
+  return new CredentialService({ platform: opts.platform }).channelStatus
 }
 
 /**

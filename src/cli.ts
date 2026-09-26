@@ -22,7 +22,7 @@ import { runTurn } from './loop/stop.ts'
 import { Context } from './kernel/context.ts'
 import { mountPlugin } from './load/loader.ts'
 import { verifyPluginFile, gateDepsFromEnv } from './load/sigGate.ts'
-import { doctorCredentials, doctorConnectivity } from './dx/doctor.ts'
+import { doctorCredentials, doctorConnectivity, doctorKeychain } from './dx/doctor.ts'
 
 const HELP = `用法: car <command> [args]
   run <plugin.ts> [--sig-enforce]
@@ -121,6 +121,9 @@ async function main(): Promise<number> {
       for (const c of doctorCredentials()) {
         console.log(`credentials.${c.envVar}: ${c.present ? '已设置（值不打印）' : `未设置 — ${c.hint}`}`)
       }
+      // M8 增强：keychain 通道状态（模型凭据读取面；缺席显式降级不静默）
+      const kc = doctorKeychain()
+      console.log(`keychain: ${kc.available ? '就绪' : `缺席（显式降级）— ${kc.note}`}`)
       // M6 增强：registry 连通性（不可达 = SKIPPED 显式跳过，离线不失败）
       const conn = await doctorConnectivity()
       console.log(`connectivity: ${conn.status} — ${conn.detail}${conn.status === 'PASS' ? `（${conn.latencyMs}ms）` : ''}`)

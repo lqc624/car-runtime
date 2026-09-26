@@ -50,6 +50,16 @@ export class Context {
     return s.impl
   }
 
+  /** 根作用域副作用登记（宿主 SDK 面，§3.2.M8 SDK 行）——与插件 fiber Effect 同纪律：body 即执行，disposer 入回卷清单 */
+  private rootDisposables: { label: string; disposer: Disposer }[] = []
+
+  /** 根作用域 Effect：宿主侧注册（RuntimeCore.registerLlmAdapter 等）入 disposeRuntime 回卷范围 */
+  effect(body: () => Disposer | Disposer[], label = 'anonymous'): void {
+    const res = body()
+    const disposers = typeof res === 'function' ? [res] : [...res]
+    for (const d of disposers) this.rootDisposables.push({ label, disposer: d as Disposer })
+  }
+
   /** 注册插件：依赖就绪即挂载，否则进入 PENDING 队列 */
   plugin(def: PluginDef): void {
     if (this.fibers.has(def.name)) {
@@ -115,6 +125,11 @@ export class Context {
   async disposeRuntime(opts: { order?: 'strict-topo' | 'concurrent' } = {}): Promise<DisposeReport> {
     const order = this.topoOrder()
     const report: DisposeReport = { unloaded: [], order: [], errors: [] }
+    // 根作用域（宿主 SDK 注册面，§3.2.M8）先于插件回卷：创建序的逆 = 根最后建、最先撤
+    for (const { label, disposer } of [...this.rootDisposables].reverse()) {
+      try { await disposer() } catch (error) { report.errors.push({ plugin: '<root>', label, error }) }
+    }
+    this.rootDisposables = []
     if ((opts.order ?? 'strict-topo') === 'strict-topo') {
       // 逐层排空：Kahn 分层为 provider→consumer 方向，卸载需反转（消费者层先于提供者层）
       for (const layer of [...order.layers].reverse()) {
