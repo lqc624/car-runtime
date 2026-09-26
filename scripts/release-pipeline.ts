@@ -139,23 +139,27 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
     } catch { /* 远端不可达或 Release 不存在 → 保持 DRY-RUN */ }
   }
   record(stage, 'G-10 GitHub Releases 归档（napi 二进制+SBOM+校验和）', g10Ok, g10Detail, g10Dry)
-  // G-09：REMOTE_CHECK=1 时实查 npm registry——版本在架 + rc tag + provenance 证明
+  // G-09：REMOTE_CHECK=1 时实查 npm registry——版本在架 + 期望 dist-tag + provenance 证明。
+  // 期望 tag 按版本形态动态选择（与 release.yml publish tag 同口径，M5 §1.1）：
+  // prerelease（1.0.0-rc.1）→ rc；稳定版（1.0.0）→ latest——1.0 发布后 rc tag 保留指向 rc.1，
+  // 硬编码查 rc 会把 1.0.0 的 post-publish 复跑误判 FAIL（09-26 与 release.yml 同批修口径）
+  const expectedTag = VERSION.includes('-') ? 'rc' : 'latest'
   let g9Ok = false
   let g9Detail = '需 npm publish 通道（远端）'
   let g9Dry = true
   if (process.env.REMOTE_CHECK === '1') {
     try {
       const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-      const view = execFileSync(npmBin, ['view', '@lqc123qwe/car-runtime', 'version', 'dist-tags.rc', 'dist.attestations.provenance.predicateType', '--json'], { encoding: 'utf-8', shell: process.platform === 'win32' })
+      const view = execFileSync(npmBin, ['view', '@lqc123qwe/car-runtime', 'version', `dist-tags.${expectedTag}`, 'dist.attestations.provenance.predicateType', '--json'], { encoding: 'utf-8', shell: process.platform === 'win32' })
       const j = JSON.parse(view)
       const onRegistry = j.version === VERSION
-      const tagRc = j['dist-tags.rc'] === VERSION
+      const tagOk = j[`dist-tags.${expectedTag}`] === VERSION
       const provenance = typeof j['dist.attestations.provenance.predicateType'] === 'string' && j['dist.attestations.provenance.predicateType'].includes('slsa.dev/provenance')
-      g9Ok = onRegistry && tagRc && provenance
+      g9Ok = onRegistry && tagOk && provenance
       g9Dry = false
       g9Detail = g9Ok
-        ? `npm 在架 @lqc123qwe/car-runtime@${VERSION}（rc tag ✓ + SLSA provenance ✓，Actions OIDC 可信发布）`
-        : `registry 不满足：version=${j.version} rc=${j['dist-tags.rc']} provenance=${j['dist.attestations.provenance.predicateType'] ?? '无'}`
+        ? `npm 在架 @lqc123qwe/car-runtime@${VERSION}（${expectedTag} tag ✓ + SLSA provenance ✓，Actions OIDC 可信发布）`
+        : `registry 不满足：version=${j.version} ${expectedTag}=${j[`dist-tags.${expectedTag}`]} provenance=${j['dist.attestations.provenance.predicateType'] ?? '无'}`
     } catch { /* registry 不可达或包未发布 → 保持 DRY-RUN */ }
   }
   record(stage, 'G-09 npm provenance（OIDC 可信发布）', g9Ok, g9Detail, g9Dry)
