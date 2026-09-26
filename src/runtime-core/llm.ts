@@ -77,7 +77,7 @@ export async function* withFinishReasonGuard(stream: AsyncIterable<LlmChunk>): A
 export class RuntimeCore {
   readonly registry = new AdapterRegistry()
   readonly credentials: CredentialService
-  #ctx: PluginContext | null = null
+  #ctx: Pick<PluginContext, 'provide' | 'effect'> | null = null
 
   constructor(credentials: CredentialService = new CredentialService()) {
     this.credentials = credentials
