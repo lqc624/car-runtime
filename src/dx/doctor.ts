@@ -4,8 +4,12 @@
  * 口径：
  *  - 凭据检查只探存在性、绝不打印值（secrets 红线：值入日志即泄露面）
  *  - 连通性检查网络不可达 = 显式 SKIPPED 而非 FAIL——测试环境必须可离线通过（不失败）
+ *  - 1.1-S2：签名就绪检查行（mode / 信任根 / 配置文件通道发现态）——诊断面只读，
+ *    门禁判定仍在 sigGate/verifier；公钥可打印、信任根值本身不打印
  */
+import { createPublicKey } from 'node:crypto'
 import { CredentialService } from '../runtime-core/credentials.ts'
+import { loadCarConfig, mergeSignatureGate } from '../load/config.ts'
 
 export interface CredentialCheck {
   name: string
@@ -41,6 +45,49 @@ export interface ConnectivityResult {
 /** M8 增强：keychain 通道状态（模型凭据读取面，§3.2.M8.2 凭据行）——能力探测口径，缺席显式降级不静默；离线可过 */
 export function doctorKeychain(opts: { platform?: NodeJS.Platform } = {}): { available: boolean; note: string } {
   return new CredentialService({ platform: opts.platform }).channelStatus
+}
+
+export interface SignatureCheck {
+  /** 生效模式（flag > env > 配置 > 缺省 warn——DEC-1 ②；enforce 缺省翻转 2026-12-25 登记计划内变更） */
+  mode: 'warn' | 'enforce'
+  /** 信任根通道：absent=未配置（全部插件按 unsigned 处理）；valid=在场且可解析；invalid=在场但解析失败（enforce 下拒签风险） */
+  trustRoot: 'absent' | 'valid' | 'invalid'
+  /** 配置文件通道（1.1-S3）：absent=cwd 未发现；found=已发现且校验通过；invalid=发现但解析/校验失败（fail-visible） */
+  configFile: 'absent' | 'found' | 'invalid'
+  detail: string
+}
+
+/** 1.1-S2 签名就绪检查：mode 生效值 + 信任根在场可解析性 + car.config.json 发现态（离线可过；值不打印） */
+export function doctorSignature(opts: { env?: NodeJS.ProcessEnv; cwd?: string; configPath?: string } = {}): SignatureCheck {
+  const env = opts.env ?? process.env
+  const cfg = loadCarConfig({ explicitPath: opts.configPath, cwd: opts.cwd })
+  let trustRoot: SignatureCheck['trustRoot'] = 'absent'
+  const raw = env.CAR_TRUST_ROOT || cfg.config.sandbox?.sigTrustRoot
+  if (raw) {
+    try {
+      createPublicKey({ key: Buffer.from(raw, 'base64'), format: 'der', type: 'spki' })
+      trustRoot = 'valid'
+    } catch {
+      trustRoot = 'invalid'
+    }
+  }
+  // 生效模式含配置层（配置文件解析失败时按 env/缺省口径合并，invalid 态在 configFile 显式呈现）
+  const { mode } = mergeSignatureGate(env, cfg.error ? {} : cfg.config)
+  const configFile: SignatureCheck['configFile'] = cfg.error ? 'invalid' : cfg.path ? 'found' : 'absent'
+  const parts = [
+    `mode=${mode}${mode === 'warn' ? '（DEC-1 ② 缺省；2026-12-25 到期翻转）' : ''}`,
+    trustRoot === 'absent'
+      ? '信任根未配置（全部插件按 unsigned 处理；car plugin-sign keygen 产出 .pub 即信任根）'
+      : trustRoot === 'valid'
+        ? '信任根已配置（ed25519 spki 可解析，值不打印）'
+        : '信任根已配置但不可解析（CAR-E-SIG 拒签风险——检查 CAR_TRUST_ROOT / sandbox.sig.trustRoot 是否为 spki base64）',
+    configFile === 'absent'
+      ? '配置文件未发现（car.config.json）'
+      : configFile === 'found'
+        ? `配置文件 ${cfg.path}（校验通过）`
+        : `配置文件无效（${cfg.error}）`,
+  ]
+  return { mode, trustRoot, configFile, detail: parts.join('；') }
 }
 
 /**

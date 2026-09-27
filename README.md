@@ -155,9 +155,21 @@ node --experimental-transform-types --test test/*.spec.ts
 - **M8 收口（2026-09-26）**：§3.2.M8 运行时底座（模型接入 A4 + 遥测 A5）收口——WIP 七文件（09-19 产出）经检查点 `93b3938` 入库（kernel 根作用域 effect() 补齐宿主侧 Effect 生命周期 + doctor keychain 通道）后，本迭代交付：**M8-BUG-1 修复**（AL-05 兜底 sawFinish 条件化——成功流零 error chunk，缺失仍显式报错）+ openai-compat SSE/重试/凭据门 8 测试 + chatStep SQ-07 集成 7 测试。全量 **231（228 PASS + 3 能力门控 skip / 0 fail）** + tsc strict 0 错（CI 首跑揪出 93b3938 遗留 strict 错误，`9898563` 修复）+ secrets-scan 97 文件 0 命中（93b3938 夹具命中已修——上次会话 PASS 声明系伪造渲染产物）。**CI 收官（run 36237615992）：16/16 全绿**。
 - 口径备注：chatStep 库面已备已测，**runTurn（M4）侧消费接线登记后续**（「已实装」口径不外推）；openai-compat 为参考适配器（ACL 接口面已钉死）；遥测 OTLP 最小实现（无重试/采样）。详见 `car-docs/10-内核v1/M8-运行时底座收口.md`。
 
+## 1.1 状态（签名收尾最小集，enforce 翻转准备）
+
+| `src/load/sign.ts` | 1.1-S1 签名原语：generateSigningKeypair（ed25519 PKCS8 DER / SPKI base64）+ signPluginFile（sidecar `<file>.minisig` 单段 base64）+ resolveTrustRoot（flag > env > pub 文件）——指南 §2 node -e 手工流固化，与 verifier/sigGate 签验同源互验 | 1.1 W2-1 |
+| `src/load/config.ts` | 1.1-S3 配置文件通道：`car.config.json`（cwd 发现 + `--config` 显式；D-11a ①）——键位 `sandbox.unsigned.allow`/`sandbox.sig.enforce`/`sandbox.sig.trustRoot`，手写校验 fail-visible（CAR-E-CONFIG：坏 JSON/未知键/类型错显式拒绝）+ mergeSignatureGate 优先级 flag > env > 配置 > 缺省（env 已定义即显式意见） | 1.1 W2-3、部署设计 §4.5.5 |
+| `src/dx/doctor.ts` +2 | 1.1-S2 doctorSignature 签名就绪行（mode 生效值含配置层 / 信任根可解析性 / 配置文件发现态）+ doctorKeychain 专测补齐（M8 §4.6「已接线未专测」出清） | 1.1 W2-2/W2-5 |
+| `src/cli.ts` | 1.1：`car plugin-sign keygen/sign/verify`（退出码家规 0/1/2；私钥 0600；重复 keygen 拒绝覆盖）+ `--config` 通道接入 run/reload/mcp-serve + **mcp-serve 装载接线**（`--plugin` 可重复 / CAR_PLUGINS env；六阶段门 verify 先于 import()；car_load_total/car_unsigned_confirmed 全链进 stderr 快照；装载 FAIL = 启动中止 exit 1 两模式一致，warn 仅豁免缺签） | 1.1 W2-1/W2-4 |
+| `test/s26-signature-closeout.spec.ts` + `test/s27-host-load-wiring.spec.ts` + `test/s18.spec.ts` 边界行 | 1.1 测试：s26 13 test（keygen 签验闭环 / 手工口径字节等价 / CLI spawn 全链退出码 / 配置 fail-visible / 优先级四向 / doctor 三通道 / keychain 平台三态）+ s27 4 test（真进程装载四态：warn 全链 / enforce fail-closed / parse FAIL 不静默 / 配置通道好签名）+ s18 无 --plugin 边界断言 | 1.1-GO |
+
+- **1.1 工程收口（2026-09-27）**：S30 §8 工程侧清单签名收尾五子项全部兑现（plugin-sign CLI / doctor 签名行 / 配置文件通道 / mcp-serve 装载接线+采集全链 / keychain 专测）。全量 **249（246 PASS + 3 能力门控 skip / 0 fail）** + tsc strict 0 错 + secrets-scan 97 文件 0 命中（密钥/签名夹具仅运行期临时目录——R-1）。QA 两轮制执行。
+- **边界口径（防外推）**：mcp-serve 装载接线 = 「装载 + 采集全链」——插件 factory 执行 + bindCore 冲刷注册项真实发生；**宿主会话执行插件工具的执行接线属 W1 登记后续**（sessionTurn 仍为事件批归一化），「已实装」口径不外推。sigstore keyless 主轨 / anthropic 适配器 / W1 runTurn→chatStep 接线均为延后登记项（用户裁决 2026-09-27）。
+- **翻转排期**：**2026-12-25 到期 enforce 缺省值翻转**落 12-25 后续发版（一行缺省值变更 + 决策记录归档，部署设计 §4.5.5 既有承诺）；数据前提 T-1 阈值随本迭代宿主采集链落成可观测。规划：`car-docs/10-内核v1/1.1-迭代规划.md`；收口报告：`car-docs/10-内核v1/1.1-签名收口终验报告.md`。
+
 ## 状态
 
-- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ M6 179/179（2026-09-15 收口）｜ M7 全量 195（192 PASS + 3 能力门控 skip，2026-09-19 收口）｜ **M5-S28 装载签名门 全量 204（201 PASS + 3 skip，2026-09-26）** ｜ **M8 运行时底座 全量 231（228 PASS + 3 skip，2026-09-26 收口，§3.2 八模块全部收口）**
+- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ M6 179/179（2026-09-15 收口）｜ M7 全量 195（192 PASS + 3 能力门控 skip，2026-09-19 收口）｜ **M5-S28 装载签名门 全量 204（201 PASS + 3 skip，2026-09-26）** ｜ **M8 运行时底座 全量 231（228 PASS + 3 skip，2026-09-26 收口，§3.2 八模块全部收口）** ｜ **1.1 签名收尾最小集 全量 249（246 PASS + 3 skip，2026-09-27 工程收口，enforce 翻转准备）**
 - **1.0.0 正式发布（2026-09-26，S29/S30）**：npm `@lqc123qwe/car-runtime@1.0.0` 在架——**dist-tag latest → 1.0.0，rc 保留指向 1.0.0-rc.1**（§1.1 口径）；SLSA provenance（Actions OIDC，透明日志在案）；GitHub Release v1.0.0 六资产（tgz/bundle/SHA256SUMS/SBOM/审计/公钥）；**post-publish 全链 13 PASS / 0 DRY-RUN / 0 FAIL** + 外部验证者等价检查（Release 实下载件 SHA256 MATCH + cosign Verified OK）。**宽限期时钟：2026-09-26 起算，2026-12-25 到期 verifier 默认值 warn→enforce 翻转（计划内变更）**。终验报告：`car-docs/10-内核v1/M5-S30-1.0收口终验报告.md`。发布工程事件：j16 首跑 E403（npm 2FA 策略 vs granular token 无 bypass——清单预设回退路径兑现）→ bypass token re-run 绿；G-09 期望 tag 动态化（`4c84b17`）在真实发布兑现价值。
 - **1.0.0-rc.1 已发布（2026-09-09）**：npm `@lqc123qwe/car-runtime@1.0.0-rc.1`（rc + latest 双 tag，SLSA provenance 在案）+ GitHub Release 6 制品；发布预演 **13 PASS / 0 DRY-RUN / 0 FAIL**（c762b72）。S22 GO 清单已全绿收口。
 - **轨道 A 三项全部完成**：E-1 WSL2 逃逸矩阵 **20/20 PASS 零逃逸**（2026-09-07，G-07 转 PASS）｜ E-3 远端发布通道 **13/13 全门禁 PASS**（2026-09-09，G-08/09/10 转 PASS）｜ E-2 Windows koffi FFI **四判据双环境全 PASS**（S24/S25/S26，2026-09-09~10；本机非提权 + windows-latest 提权 runner 双绿，CI 门禁已接入）。

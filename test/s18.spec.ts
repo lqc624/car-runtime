@@ -50,6 +50,15 @@ test('S18: 采集窗口——会话结束 stderr 输出零内容快照（登记�
   assert.ok('car_registry_decision|source=registry' in snap)
 })
 
+test('S18+: 1.1-S4 边界——未指定 --plugin 时装载计数不出现（装载接线不改变缺省协议面与快照键集）', async () => {
+  const { stderr } = await talk('claude-code', [
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'session_start', arguments: { hostSessionId: 's' } } }),
+  ])
+  const snap = JSON.parse(/snapshot=(\{.*?\}) zeroContent/.exec(stderr)![1])
+  assert.ok(!('car_load_total|result=ok' in snap), '无 --plugin = 无装载计数（1.1 装载接线为显式 opt-in）')
+  assert.ok(!('car_unsigned_confirmed|confirmed=no' in snap))
+})
+
 test('S18: codex 宿主接入（同一入口不同 hostId）', async () => {
   const { outs } = await talk('codex', [
     JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'session_start', arguments: { hostSessionId: 'cx-e2e' } } }),
