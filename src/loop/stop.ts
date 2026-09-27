@@ -12,6 +12,7 @@
  *  - 取消：未派发调用补记成对事件（toolCall + 合成错误 toolResult），日志无缺口
  */
 import type { SessionLog } from '../session/log.ts'
+import { CarM8Error } from '../runtime-core/errors.ts'
 
 export type StepOutcome = 'completed' | 'max-tokens' | 'null'
 export type TurnEndReason = 'completed' | 'max-tokens' | 'aborted' | 'error' | 'blocked' | 'interrupted'
@@ -23,6 +24,9 @@ export interface ToolDef {
   concludesTurn?: boolean
   terminate?: boolean
   run(args: Record<string, unknown>): Promise<unknown>
+  // —— 1.4-S1 声明面加法（进模型 ToolDefinition；执行面与声明面同一对象——声明面=授权面红线）——
+  description?: string
+  parameters?: unknown
 }
 /** 模型单步响应（provider 形态；stopReason 为不可变透传——ADR-001） */
 export interface ModelStep {
@@ -193,7 +197,14 @@ export async function runTurn(opts: {
       trail.push({ seq, reason: 'aborted' })
       return { reason: 'aborted', steps, endReasonTrail: trail }
     }
-    const seq = log.append('runtime', 'turnEnd', turnId, null, { reason: 'error', detail: String(e) }).seq
+    // 1.4-S4：CarM8Error 保形——code/userHint/retryable 进 turnEnd（A080001 引导文案「请运行
+    // car doctor」可达用户；非 CarM8Error 维持 String(e) 口径不变）
+    const m8 = e instanceof CarM8Error
+    const detail = m8 ? `${e.slug}: ${e.message}` : String(e)
+    const seq = log.append('runtime', 'turnEnd', turnId, null, {
+      reason: 'error', detail,
+      ...(m8 ? { code: e.code, userHint: e.userHint, retryable: e.retryable } : {}),
+    }).seq
     trail.push({ seq, reason: 'error' })
     return { reason: 'error', steps, endReasonTrail: trail }
   }

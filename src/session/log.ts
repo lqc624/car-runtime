@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { decodeLogBuffer, splitJsonlLines } from './format.ts'
 
-export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' | 'fork' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；M5-DEC4 加法扩展：跨宿主 fork 标记事件；六值 TurnEndReason 不变
+export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' | 'fork' | 'system' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；M5-DEC4 加法扩展：跨宿主 fork 标记事件；1.4-S2 加法扩展：system prompt 落链（§3.5.5：新模型可见输入 = 新事件类型）；六值 TurnEndReason 不变
 export type Actor = 'user' | 'model' | 'plugin' | 'runtime'
 export interface SessionEvent {
   seq: number
@@ -88,7 +88,8 @@ export class SessionLog {
     const out: Array<{ role: string; [k: string]: unknown }> = []
     for (const e of this.events) {
       if (upTo !== undefined && e.seq >= upTo) break
-      if (e.kind === 'user') out.push({ role: 'user', content: e.payload })
+      if (e.kind === 'system') out.push({ role: 'system', content: e.payload })
+      else if (e.kind === 'user') out.push({ role: 'user', content: e.payload })
       else if (e.kind === 'assistant') out.push({ role: 'assistant', content: e.payload })
       else if (e.kind === 'toolCall') out.push({ role: 'assistant', toolCall: e.payload })
       else if (e.kind === 'toolResult') out.push({ role: 'toolResult', content: e.payload })

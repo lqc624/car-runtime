@@ -273,7 +273,7 @@ test('S26: CLI 配置通道真实消费——car run 经 car.config.json 走 enf
     assert.equal(r1.code, 1)
     assert.match(r1.stderr, /签名门禁拒绝.*signature missing/)
     // env 显式 0 压过配置 → warn 放行到装配段
-    const r2 = await car(['run', 'plugin.ts'], { cwd: dir, env: { CAR_SIG_ENFORCE: '0' } })
+    const r2 = await car(['run', 'plugin.ts', '--demo'], { cwd: dir, env: { CAR_SIG_ENFORCE: '0' } })  // 1.4 D-13：stub 流挂 --demo
     assert.equal(r2.code, 0, r2.stderr)
     assert.match(r2.stdout, /\[1\/5 装配\] OK/)
     // 坏配置 fail-visible 中止（exit 2，不进入装载）

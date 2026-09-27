@@ -85,24 +85,38 @@ export function parseManifest(raw: unknown, file = '<manifest>'): Manifest {
   return m
 }
 
-export interface ToolReg { name: string; run: (args: any) => Promise<unknown> }
+export interface ToolReg {
+  name: string
+  run: (args: any) => Promise<unknown>
+  // —— 1.4-S1 声明面加法（进模型 ToolDefinition；缺省收口见 runtime-core/tools.ts T-22）——
+  /** 工具描述（进模型 function.description） */
+  description?: string
+  /** 入参 JSON Schema（进模型 function.parameters） */
+  parameters?: unknown
+  /** 副作用声明（缺省 write 收口——T-22 同款：未声明按最高约束） */
+  declaredSideEffect?: 'readonly' | 'write'
+}
 export interface CommandReg { name: string; run: (args: string[]) => Promise<void> }
 export interface PluginApi {
   registerTool(tool: ToolReg): void
   registerCommand(cmd: CommandReg): void
   getRegisteredTools(): ToolReg[]
+  /** 1.4-S2：插件设定 system prompt（session 级；last-wins；bindCore 时冲刷进宿主收集器，落 'system' 事件） */
+  setSystemPrompt(text: string): void
 }
 
 interface HostBinding {
   registerTool?(tool: ToolReg): void
   registerCommand?(cmd: CommandReg): void
   getRegisteredTools(): ToolReg[]
+  setSystemPrompt?(text: string): void
 }
 
 class ApiImpl {
   #host: HostBinding | undefined
   #pendingTools: ToolReg[] = []
   #pendingCommands: CommandReg[] = []
+  #pendingSystemPrompt: string | null = null
   registerTool(tool: ToolReg): void {
     if (this.#host?.registerTool) { this.#host.registerTool(tool); return }
     this.#pendingTools.push(tool) // 注册类动作始终可用：Stub 期收集，bind 后冲刷
@@ -110,6 +124,10 @@ class ApiImpl {
   registerCommand(cmd: CommandReg): void {
     if (this.#host?.registerCommand) { this.#host.registerCommand(cmd); return }
     this.#pendingCommands.push(cmd)
+  }
+  setSystemPrompt(text: string): void {
+    if (this.#host?.setSystemPrompt) { this.#host.setSystemPrompt(text); return }
+    this.#pendingSystemPrompt = text // last-wins：多次设定取最后一次
   }
   getRegisteredTools(): ToolReg[] {
     // 依赖宿主绑定的能力查询：bindCore 前一调用即抛错（Stub 显式失败）
@@ -120,8 +138,10 @@ class ApiImpl {
     this.#host = host
     for (const t of this.#pendingTools) host.registerTool?.(t)
     for (const c of this.#pendingCommands) host.registerCommand?.(c)
+    if (this.#pendingSystemPrompt !== null) host.setSystemPrompt?.(this.#pendingSystemPrompt)
     this.#pendingTools = []
     this.#pendingCommands = []
+    this.#pendingSystemPrompt = null
   }
 }
 

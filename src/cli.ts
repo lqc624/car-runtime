@@ -24,10 +24,15 @@ import { runTurn } from './loop/stop.ts'
 import { Context } from './kernel/context.ts'
 import { mountPlugin } from './load/loader.ts'
 import { verifyPluginFile } from './load/sigGate.ts'
-import { loadCarConfig, mergeSignatureGate } from './load/config.ts'
+import { loadCarConfig, mergeSignatureGate, mergeLlmConfig } from './load/config.ts'
 import { generateSigningKeypair, signPluginFile, resolveTrustRoot } from './load/sign.ts'
-import { doctorCredentials, doctorConnectivity, doctorKeychain, doctorSignature } from './dx/doctor.ts'
+import { doctorCredentials, doctorConnectivity, doctorKeychain, doctorSignature, doctorModelReadiness } from './dx/doctor.ts'
+import { RuntimeCore, createOpenAICompatAdapter } from './runtime-core/llm.ts'
+import { CredentialService } from './runtime-core/credentials.ts'
+import { chatStep } from './runtime-core/chatStep.ts'
+import { toToolDefinitions } from './runtime-core/tools.ts'
 import { createTelemetryFacade, telemetryConfigFromEnv } from './runtime-core/telemetry.ts'
+import { TurnTracer } from './runtime-core/trace.ts'
 import type { CounterName, AllowedLabels } from './telemetry/metrics.ts'
 
 const HELP = `用法: car <command> [args]
@@ -98,8 +103,11 @@ async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv
   switch (cmd) {
     case 'run': {
+      // 1.4-S5（D-13）：缺省 = 真实模型路径（chatStep 经 openai-compat 适配器）；--demo 保留 stub 演示流。
+      // 无模型配置 exit 2 显式报错引导（禁静默降级）。会话/索引/签名门两路径共用。
       const file = rest[0]
       if (!file) { console.error('缺少插件文件参数'); return 2 }
+      const isDemo = rest.includes('--demo')
       const t0 = Date.now()
       // 环节 0：装载前签名门（M5-S28 装载接线 + 1.1-S3 配置通道：flag > env > car.config.json > 缺省 warn）
       const sig = resolveSigGate(rest)
@@ -118,29 +126,164 @@ async function main(): Promise<number> {
       // 失败非致命——索引为派生缓存，rebuild-index 兜底语义不变；SQLite 能力缺席 = 显式登记一次后停用）
       const indexUpdater = new IndexUpdater({ dbPath: join(process.cwd(), 'sessions-index.db'), onError: e => console.error(`[index-updater] ${e.message}`) })
       log.attachSink(line => { store.append(line); indexUpdater.record(log.sessionId, line, store.path) })
+      // 1.4-S5：插件工具收集（ToolReg 全量进 Map——执行面与声明面同一对象，声明面=授权面红线）；
+      // setSystemPrompt 收集（last-wins，D-17）
       const hostTools: any[] = []
+      let pluginSystemPrompt: string | null = null
       ctx.plugin({ name: plugin.manifest.name, apply: (c) => {
         plugin.bindCore({
           registerTool: (t) => { hostTools.push(t); c.provide('tool:' + t.name, t) },
           getRegisteredTools: () => hostTools,
+          setSystemPrompt: (text) => { pluginSystemPrompt = text },
         })
-        plugin.api.registerTool({
-          name: 'demo_tool', run: async () => 'demo-ok',
-        })
+        if (isDemo) {
+          // --demo 演示流专属脚手架（真路径不注入——1.1 规划登记的 demo_tool 撞名边缘就此出清）
+          plugin.api.registerTool({
+            name: 'demo_tool', run: async () => 'demo-ok',
+          })
+        }
       } })
       console.log(`[1/5 装配] OK（${Date.now() - t0}ms，工具: ${hostTools.map(t => t.name).join(', ') || '无'}）`)
       // 环节 2-3：沙箱探测 + 事件运行 + 停止收口
       const probe = await probeCapabilities()
       const sandbox = new SandboxExecutor({ probe, audit: () => {}, workspace: process.cwd() })
       console.log(`[2/5 沙箱] ${probe.degraded ? `降级（${probe.reason}）——Q-04 约束生效` : 'Landlock 就绪'}`)
-      log.append('user', 'user', 'T0', '请调用 demo_tool 并汇报')
-      const r = await runTurn({
-        log, turnId: 'T0',
-        preset: { mode: 'confirm', authorize: async () => { console.log('[授权] 确认模式：放行 demo_tool'); return true } },
-        tools: new Map([['demo_tool', { declaredSideEffect: 'write', run: async () => 'demo-ok' } as any]]),
-        model: async () => ({ stopReason: 'toolUse' as const, toolCalls: [{ id: 'c1', tool: 'demo_tool', args: {} }] }),
-      })
+      // 工具执行面 Map（T-22 收口：declaredSideEffect 缺省 write）
+      const toolsMap = new Map<string, any>(hostTools.map(t => [t.name, {
+        declaredSideEffect: t.declaredSideEffect ?? 'write',
+        run: t.run,
+        ...(t.description !== undefined ? { description: t.description } : {}),
+        ...(t.parameters !== undefined ? { parameters: t.parameters } : {}),
+      }]))
+      // 取消信号（SIGINT → 中断在途流；runTurn 既有收口落 turnEnd aborted）
+      const signal = { aborted: false }
+      const onSigint = () => { signal.aborted = true; console.error('\n[取消] SIGINT——正在中断当前 turn…') }
+      process.once('SIGINT', onSigint)
+      // 1.4-S6：遥测门面（CAR_OTEL_ENDPOINT env 通道；缺省关 = noop 零出站）——turn/step span 挂装配层
+      const otel = createTelemetryFacade(telemetryConfigFromEnv())
+      const tracer = new TurnTracer(otel)
+      let r: Awaited<ReturnType<typeof runTurn>>
+      if (isDemo) {
+        // --demo：stub 演示流（无模型可跑——五环节叙事与既有测试/CI 承载）
+        log.append('user', 'user', 'T0', '请调用 demo_tool 并汇报')
+        r = await runTurn({
+          log, turnId: 'T0',
+          preset: { mode: 'confirm', authorize: async () => { console.log('[授权] 确认模式：放行 demo_tool'); return true } },
+          tools: new Map([['demo_tool', { declaredSideEffect: 'write', run: async () => 'demo-ok' } as any]]),
+          model: async () => ({ stopReason: 'toolUse' as const, toolCalls: [{ id: 'c1', tool: 'demo_tool', args: {} }] }),
+        })
+      } else {
+        // 真路径：模型配置解析（D-16 优先级 flag > env > config）+ 装配 RuntimeCore
+        const cfgLlm = loadCarConfig({ explicitPath: flagValue(rest, '--config') })
+        if (cfgLlm.error) { console.error(cfgLlm.error); return 2 }
+        const mtFlag = flagValue(rest, '--max-tokens')
+        const llm = mergeLlmConfig(process.env, cfgLlm.config, {
+          baseUrl: flagValue(rest, '--base-url'),
+          model: flagValue(rest, '--model'),
+          adapterId: flagValue(rest, '--adapter-id'),
+          ...(mtFlag !== undefined ? { maxTokens: Number(mtFlag) } : {}),
+        })
+        const prompt = flagValue(rest, '--prompt')
+        if (!llm.baseUrl || !llm.model || prompt === undefined) {
+          console.error('CAR-E-LLM-CONFIG: 真实模型路径需要 baseUrl + model + --prompt——')
+          console.error('  配置：car.config.json {"llm":{"baseUrl":"https://…","model":"…"}} / env CAR_LLM_BASE_URL+CAR_LLM_MODEL / flag --base-url --model --prompt')
+          console.error('  凭据：OPENAI_API_KEY（env fallback 需 CAR_ALLOW_ENV_CREDENTIALS=1 或 llm.allowEnvFallback）或 keychain；诊断：car doctor')
+          console.error('  （无模型演示流：--demo）')
+          return 2
+        }
+        const modelName = llm.model
+        const credService = new CredentialService()
+        const core = new RuntimeCore(credService)
+        core.bindContext(ctx)
+        // 适配器经根作用域 effect 可逆注册（bindContext 必须先于 register——否则走非可逆直注册分支）
+        core.registerLlmAdapter(createOpenAICompatAdapter({
+          baseUrl: llm.baseUrl,
+          credentials: credService,
+          provider: 'openai-compat',
+        }), { default: true })
+        // MCP 工具进 turn（D-18）：--mcp <serverId>（可重复；server 启动规格在 car.config.json mcp.servers 登记）
+        const mcpIds: string[] = []
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === '--mcp') {
+            const id = rest[++i]
+            if (!id) { console.error('缺少 --mcp serverId'); return 2 }
+            mcpIds.push(id)
+          }
+        }
+        const mcpTransports: import('./mcp/gateway.ts').ClientTransport[] = []
+        if (mcpIds.length) {
+          const { McpGateway } = await import('./mcp/gateway.ts')
+          const { createStdioClientTransport } = await import('./mcp/stdioClient.ts')
+          const gw = new McpGateway()
+          for (const id of mcpIds) {
+            const spec = cfgLlm.config.mcp?.servers?.[id]
+            if (!spec) { console.error(`CAR-E-MCP: server "${id}" 未在 car.config.json mcp.servers 登记`); return 2 }
+            const transport = createStdioClientTransport({ command: spec.command, args: spec.args })
+            mcpTransports.push(transport)
+            const mcpTools = await gw.register({ serverId: id, transport, env: spec.env })
+            for (const t of mcpTools) {
+              const modelName = `mcp_${id}_${t.name}`
+              if (toolsMap.has(modelName)) { console.error(`CAR-E-MCP: 工具名冲突 ${modelName}（跨源同名禁静默覆盖）`); return 1 }
+              toolsMap.set(modelName, {
+                declaredSideEffect: t.declaredSideEffect ?? 'write',
+                run: async (args: any) => { const r = await gw.callTool(id, t.name, args); if (!r.ok) throw new Error(r.error ?? 'mcp call failed'); return r.result },
+                ...(t.description !== undefined ? { description: t.description } : {}),
+                ...(t.inputSchema !== undefined ? { parameters: t.inputSchema } : {}),
+              })
+            }
+            console.log(`[MCP] ${id}: ${mcpTools.length} 工具入声明面`)
+          }
+        }
+        // PTC 进真实 turn（--ptc）：插件工具 Map 即 ToolBridge（声明面=授权面同源快照）；
+        // run_code 进工具 Map（强制 write）；SDK 声明块独立 system 事件（D-17）
+        let sdkBlock: string | null = null
+        if (rest.includes('--ptc')) {
+          const { makePtcToolDefinition, runCode } = await import('./ptc/runCode.ts')
+          void runCode
+          const { renderSdkFromRegistry } = await import('./ptc/sdk.ts')
+          const registry = new Map([...toolsMap].map(([name, t]) => [name, { run: t.run, description: t.description, inputSchema: t.parameters }]))
+          sdkBlock = renderSdkFromRegistry(registry)
+          const ptc = makePtcToolDefinition({ tools: registry, audit: () => {} })
+          toolsMap.set(ptc.name, ptc)
+          console.log(`[PTC] run_code 入工具面（桥接 ${registry.size} 工具；SDK 声明块进 system）`)
+        }
+        // system prompt 落链（D-17）：--system flag > 插件 setSystemPrompt（last-wins）；SDK 块独立追加
+        const systemText = flagValue(rest, '--system') ?? pluginSystemPrompt
+        if (systemText) log.append('runtime', 'system', 'system', systemText)
+        if (sdkBlock) log.append('runtime', 'system', 'system', sdkBlock)
+        log.append('user', 'user', 'T0', prompt)
+        const turn = tracer.startTurn('T0')
+        let stepNo = 0
+        r = await runTurn({
+          log, turnId: 'T0',
+          preset: { mode: 'confirm', authorize: async (call) => { console.log(`[授权] 确认模式：放行 ${call.tool}`); return true } },
+          tools: toolsMap,
+          signal,
+          model: () => {
+            // 1.4-S6：step span 挂每次 model() 调用（parent = turn span；同 turn 共享 traceId）
+            const step = turn.stepSpan(++stepNo)
+            return chatStep({
+              core, log, turnId: 'T0',
+              model: modelName,
+              tools: toToolDefinitions(toolsMap),
+              ...(llm.maxTokens !== undefined ? { maxTokens: llm.maxTokens } : {}),
+              ...(llm.adapterId ? { adapterId: llm.adapterId } : {}),
+              signal,
+            }).then(
+              res => { step.end(res.stopReason); return res },
+              e => { step.recordException(e); step.end('error'); throw e },
+            )
+          },
+        })
+        turn.end(r.reason)
+      }
+      process.removeListener('SIGINT', onSigint)
       console.log(`[3/5 收口] turnEnd=${r.reason}（steps=${r.steps}）`)
+      // 1.4-S6：遥测收口 flush（显式开路径；缺省关 = 空转）
+      if (otel.enabled) {
+        await otel.shutdown()
+        console.error(`[otel] stats=${JSON.stringify(otel.stats())}`)
+      }
       // 环节 4：落盘收口（全程逐事件 fsync 已发生，此处仅关句柄核对 + 索引 pending 落盘）
       store.close()
       await indexUpdater.close()
@@ -179,6 +322,9 @@ async function main(): Promise<number> {
       // 1.1-S2 增强：签名就绪行（mode 生效值 / 信任根可解析性 / 配置文件通道发现态；诊断只读）
       const sig = doctorSignature({ cwd: process.cwd(), configPath: flagValue(rest, '--config') })
       console.log(`signature: ${sig.detail}`)
+      // 1.4-S3 增强：模型就绪行（baseUrl/model / 凭据通道 / envFallback；值不打印）
+      const mr = doctorModelReadiness({ cwd: process.cwd(), configPath: flagValue(rest, '--config') })
+      console.log(`model: ${mr.detail}`)
       // M6 增强：registry 连通性（不可达 = SKIPPED 显式跳过，离线不失败）
       const conn = await doctorConnectivity()
       console.log(`connectivity: ${conn.status} — ${conn.detail}${conn.status === 'PASS' ? `（${conn.latencyMs}ms）` : ''}`)

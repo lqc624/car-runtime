@@ -9,7 +9,7 @@
  */
 import { createPublicKey } from 'node:crypto'
 import { CredentialService } from '../runtime-core/credentials.ts'
-import { loadCarConfig, mergeSignatureGate } from '../load/config.ts'
+import { loadCarConfig, mergeSignatureGate, mergeLlmConfig } from '../load/config.ts'
 
 export interface CredentialCheck {
   name: string
@@ -90,6 +90,47 @@ export function doctorSignature(opts: { env?: NodeJS.ProcessEnv; cwd?: string; c
   return { mode, trustRoot, configFile, detail: parts.join('；') }
 }
 
+export interface ModelReadinessCheck {
+  /** baseUrl + model 均在场 = true（可发起真实模型请求的最低配置面） */
+  configured: boolean
+  baseUrl: string
+  model: string
+  /** 凭据通道探测（存在性，值不打印）：keychain 命中 / env 命中（显式开启时）/ 全落空 */
+  credential: 'keychain' | 'env' | 'not-found'
+  /** env fallback 开关态（CAR_ALLOW_ENV_CREDENTIALS=1 或 llm.allowEnvFallback） */
+  envFallback: 'on' | 'off'
+  detail: string
+}
+
+/** 1.4-S3 模型就绪检查（D-16）：baseUrl/model 在场性 + 凭据通道存在性探测（离线可过；值不打印） */
+export function doctorModelReadiness(opts: { env?: NodeJS.ProcessEnv; cwd?: string; configPath?: string } = {}): ModelReadinessCheck {
+  const env = opts.env ?? process.env
+  const cfg = loadCarConfig({ explicitPath: opts.configPath, cwd: opts.cwd })
+  const { baseUrl, model, allowEnvFallback } = mergeLlmConfig(env, cfg.error ? {} : cfg.config)
+  const envFallback: ModelReadinessCheck['envFallback'] = allowEnvFallback ? 'on' : 'off'
+  let credential: ModelReadinessCheck['credential'] = 'not-found'
+  if (allowEnvFallback) {
+    // env fallback 显式开启：env 变量存在性（OPENAI_API_KEY / CAR_LLM_API_KEY）——只探存在不取值
+    if (env.OPENAI_API_KEY || env.CAR_LLM_API_KEY) credential = 'env'
+  }
+  if (credential === 'not-found') {
+    // keychain 通道存在性（resolve 探测，A080001 全落空即 not-found；值不打印）
+    try {
+      const ref = new CredentialService().resolve('openai-compat', { env, allowEnvFallback })
+      credential = ref.source
+    } catch { /* 全落空 = not-found（登记口径，非错误） */ }
+  }
+  const configured = !!baseUrl && !!model
+  const parts = [
+    configured ? `baseUrl=${baseUrl} model=${model}` : 'baseUrl/model 未配置（car run 真路径需 llm.* 配置或 CAR_LLM_BASE_URL/CAR_LLM_MODEL——见 car doctor / 配置指南）',
+    credential === 'keychain' ? '凭据=keychain 命中（car-runtime/openai-compat，值不打印）'
+      : credential === 'env' ? '凭据=env 命中（显式开启 fallback，值不打印）'
+      : '凭据未就绪（keychain 未命中且 env fallback 未开或变量缺席——A080001 会引导至此）',
+    `envFallback=${envFallback}`,
+  ]
+  return { configured, baseUrl: baseUrl ?? '', model: model ?? '', credential, envFallback, detail: parts.join('；') }
+}
+
 /**
  * registry 连通性检查：可达 = PASS（含延迟）；不可达/显式跳过 = SKIPPED（不失败）。
  * 默认 registry 取 CAR_REGISTRY_URL，缺省 npmjs。
@@ -105,14 +146,20 @@ export async function doctorConnectivity(opts: {
     return { status: 'SKIPPED', detail: `显式离线（CAR_OFFLINE=1 或测试注入）——跳过 ${url}`, latencyMs: 0 }
   }
   const t0 = Date.now()
+  // 同 1.4-BUG-2：AbortSignal.timeout → 手动 controller（进程退出 libuv win32 断言预防）
+  const controller = new AbortController()
+  const abortTimer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 2000)
   try {
-    await fetch(url, { signal: AbortSignal.timeout(opts.timeoutMs ?? 2000) })
+    await fetch(url, { signal: controller.signal })
     return { status: 'PASS', detail: url, latencyMs: Date.now() - t0 }
   } catch (e) {
+    clearTimeout(abortTimer)
     return {
       status: 'SKIPPED',
       detail: `registry 不可达（${(e as Error).name}: ${(e as Error).message}）——离线环境显式跳过，不判失败`,
       latencyMs: Date.now() - t0,
     }
+  } finally {
+    clearTimeout(abortTimer)
   }
 }

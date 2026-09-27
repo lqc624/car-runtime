@@ -213,7 +213,7 @@ test('S28: 生产调用点——car run 真进程 append → cwd sessions-index.
     // 工具名避开 demo_tool：CLI 演示脚手架硬编码注册 demo_tool，同名插件工具触发预存在的 provide
     // 撞名边缘（登记不修——W1 重做 car run 装配面时出清）
     writeFileSync(join(dir, 'p.ts'), `export const manifest = { name: 'p', version: '1.0.0' }\nexport default function apply(api) {\n  api.registerTool({ name: 't', run: async () => 'ok' })\n}\n`)
-    const r = await car(['run', 'p.ts'], { cwd: dir })
+    const r = await car(['run', 'p.ts', '--demo'], { cwd: dir })  // 1.4 D-13：stub 流挂 --demo
     assert.equal(r.code, 0, r.stderr)
     const dbPath = join(dir, 'sessions-index.db')
     assert.ok(existsSync(dbPath), 'car run 运行后 cwd 索引自举在位')

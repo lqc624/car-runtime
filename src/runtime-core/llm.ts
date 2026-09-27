@@ -199,7 +199,13 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
   const id = opts.id ?? 'openai-compat'
   const baseUrl = opts.baseUrl.replace(/\/+$/, '')
   if (!baseUrl.startsWith('https://')) {
-    throw new Error(`CAR-E-LLM-TLS: baseUrl 必须 https（TLS 强制，§3.2.M8.4；本地明文部署请经 TLS 代理或自建适配器）`)
+    // 1.4-S4（D-12a，1.2 规划期裁决）：http 仅豁免 loopback——本地模型服务（Ollama 等）与
+    // 本地 E2E；非回环地址维持 TLS 强制（§3.2.M8.4）。豁免集显式列举，不扩大到局域网。
+    let loopback = false
+    try { const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, ''); loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1' } catch { /* 解析失败 = 非法 URL，按非回环拒绝 */ }
+    if (!loopback) {
+      throw new Error(`CAR-E-LLM-TLS: baseUrl 必须 https（TLS 强制，§3.2.M8.4）；http 仅豁免 loopback（127.0.0.1/[::1]/localhost，D-12a）——远程明文部署请经 TLS 代理或自建适配器`)
+    }
   }
   const url = `${baseUrl}/chat/completions`
   const fetchImpl = opts.fetchImpl ?? fetch
@@ -210,6 +216,9 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
   const backoffMs = opts.backoffMs ?? [1_000, 2_000]
 
   const toOpenAI = (req: LlmRequest, apiKey: string) => ({
+    // 1.4-BUG-1：method: 'POST' 缺失——M8 最小实现潜伏缺陷（注入式 fetch 的单测忽略 method，
+    // 真 undici 对 GET+body 直接拒绝）；car run 真路径接线时暴露（生产调用点核查产出）
+    method: 'POST',
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${apiKey}`,
@@ -250,6 +259,8 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
       const payload = toOpenAI(req, apiKey)
 
       for (let attempt = 0; ; attempt++) {
+        // 1.4-S4（D-19）：外部取消 ≠ 失败——attempt 前检查，静默收口（无 chunk、无 retry）
+        if (req.signal?.aborted) return
         const controller = new AbortController()
         const started = Date.now()
         let firstByteSeen = false
@@ -267,6 +278,9 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
           if (!res.body) throw new Retryable('响应无 body 流')
           let sawFinish = false
           for await (const chunk of parseSseStream(res.body)) {
+            // 1.4-S4（D-19）：chunk 间隙检查取消——abort 连接并静默收口（不产 error chunk，
+            // 不违反 finishReason 不可变；上层 chatStep 以自身 signal 检查抛 TurnAborted）
+            if (req.signal?.aborted) { controller.abort(); return }
             if (!firstByteSeen) { firstByteSeen = true; clearTimeout(firstByteTimer) }
             if (chunk.finishReason !== undefined) sawFinish = true
             yield chunk
@@ -279,6 +293,8 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
           }
           return
         } catch (e) {
+          // 1.4-S4（D-19）：外部取消（abort 连锁的 fetch 异常）≠ 失败——静默收口，不走 retry
+          if (req.signal?.aborted) return
           const beforeFirstByte = !firstByteSeen
           clearTimeout(firstByteTimer)
           // 首块前失败 = 网络错误/429/5xx/首字节超时（§3.5.4 重试条件全集）——未消费任何

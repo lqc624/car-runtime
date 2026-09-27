@@ -4,7 +4,8 @@
  * 口径（§3.2.M8.5 关键约束，逐条落地）：
  *  - 默认关：无端点配置时不初始化任何 exporter——无配置 = noop 句柄 + 零出站（可机器断言）；
  *  - 显式开：用户配置端点即视为开启（CAR_OTEL_ENDPOINT 或显式 config 传入）；
- *  - 端点归用户：数据只发往用户自配 E-05；OTLP/HTTP JSON（fetch），导出超时 5s；
+ *  - 端点归用户：数据只发往用户自配 E-05；OTLP/HTTP JSON（node:http(s) 出站——1.4-BUG-2：全局
+ *    fetch/undici 在 win32 进程退出时触发 libuv 断言崩溃），导出超时 5s；
  *    1.2-S3 生产级策略（D-12b 口径修订，2026-09-27）：**0 重试 → 有界重试 ≤2**（仅 429/5xx/
  *    网络错误，退避 1s/2s；4xx 业务错不重试）——重试耗尽静默丢弃 + droppedExports 计数，
  *    永不抛错（BD-05「不抛错、不落审计」收紧保持）；隐私三原则不变（数据仍只发用户自配端点）；
@@ -22,6 +23,8 @@
  *    不引入 @opentelemetry/* 依赖（项目零依赖红线，README engines 纪律）。
  */
 import { randomBytes } from 'node:crypto'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 
 export type SamplingSpec = 'always_on' | 'always_off' | { ratio: number }
 
@@ -55,10 +58,16 @@ export interface TelemetrySpan {
   recordException(err: unknown): this
   end(): void
   readonly traceId: string
+  /** 1.4-S6：子 span 挂链需要父 spanId（TurnTracer turn→step 层级） */
+  readonly spanId: string
 }
 
 export interface TelemetryTracer {
-  startSpan(name: string, opts?: { attributes?: Record<string, string | number | boolean> }): TelemetrySpan
+  startSpan(name: string, opts?: {
+    attributes?: Record<string, string | number | boolean>
+    /** 1.4-S6：trace 透传（traceId 复用 + parentSpanId 挂链）；缺省 = 新独立 trace */
+    trace?: { traceId: string; parentSpanId?: string }
+  }): TelemetrySpan
 }
 
 export interface TelemetryCounter {
@@ -102,6 +111,7 @@ const noopSpan = (): TelemetrySpan => ({
   recordException() { return noopSpan() },
   end() {},
   traceId: '',
+  spanId: '',
 })
 const NOOP_TRACER: TelemetryTracer = { startSpan: () => noopSpan() }
 const NOOP_METER: TelemetryMeter = { createCounter: () => ({ add() {} }) }
@@ -164,7 +174,25 @@ export function createTelemetryFacade(
     }
   }
 
-  const fetchImpl = opts.fetchImpl ?? fetch
+  // 1.4-BUG-2：出站默认走 node:http(s)（非全局 fetch/undici）——win32 上 undici socket +
+  // 进程退出触发 libuv 断言崩溃（UV_HANDLE_CLOSING, 0xC0000409，Node 23.5 实测、22 不复现）；
+  // 测试仍可注入 fetchImpl（缝保留）。res.resume() 排空响应体（连接干净归还）。
+  const fetchImpl = opts.fetchImpl ?? ((url: string | URL, init?: RequestInit): Promise<{ ok: boolean; status: number }> => new Promise(resolve => {
+    try {
+      const u = String(url)
+      const mod = u.startsWith('https:') ? httpsRequest : httpRequest
+      const req = mod(u, { method: init?.method ?? 'GET', headers: init?.headers as Record<string, string> | undefined }, res => {
+        res.resume()
+        res.on('end', () => {
+          const st = res.statusCode ?? 0
+          resolve({ ok: st >= 200 && st < 300, status: st })
+        })
+      })
+      req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')))
+      req.on('error', () => resolve({ ok: false, status: 599 })) // 网络/超时错误 → 599 可重试类
+      req.end(init?.body ?? null)
+    } catch { resolve({ ok: false, status: 599 }) }
+  }))
   const now = opts.now ?? Date.now
   const sleep = config?.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
   const timeoutMs = config?.exportTimeoutMs ?? 5_000
@@ -194,12 +222,16 @@ export function createTelemetryFacade(
    */
   const exportOtlp = async (path: string, body: unknown): Promise<boolean> => {
     for (let attempt = 0; ; attempt++) {
+      // 1.4-BUG-2：AbortSignal.timeout 的内部定时器在进程退出时触发 libuv win32 断言崩溃
+      // （UV_HANDLE_CLOSING, 0xC0000409）——改手动 AbortController + clearTimeout 确定性清理
+      const controller = new AbortController()
+      const abortTimer = setTimeout(() => controller.abort(), timeoutMs)
       try {
         const res = await fetchImpl(endpoint + path, {
           method: 'POST',
           headers: baseHeaders,
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: controller.signal,
         })
         if (res.ok) return true
         if ((res.status === 429 || res.status >= 500) && attempt < retryLimit) {
@@ -214,6 +246,8 @@ export function createTelemetryFacade(
           continue
         }
         return false
+      } finally {
+        clearTimeout(abortTimer)
       }
     }
   }
@@ -277,9 +311,10 @@ export function createTelemetryFacade(
   const activeTracer: TelemetryTracer = {
     startSpan(name, startOpts) {
       const record: SpanRecord = {
-        traceId: randomBytes(16).toString('hex'),
+        // 1.4-S6：trace 透传（traceId 复用 + parentSpanId 挂链）——缺省仍为独立随机 trace（1.1 行为不变）
+        traceId: startOpts?.trace?.traceId ?? randomBytes(16).toString('hex'),
         spanId: randomBytes(8).toString('hex'),
-        parentSpanId: null,
+        parentSpanId: startOpts?.trace?.parentSpanId ?? null,
         name,
         startMs: now(),
         endMs: 0,
@@ -287,6 +322,7 @@ export function createTelemetryFacade(
       }
       return {
         get traceId() { return record.traceId },
+        get spanId() { return record.spanId },
         setAttribute(key, value) { record.attributes[key] = value; return this },
         addEvent(evtName, attrs) { record.attributes[`event.${evtName}`] = attrs ? JSON.stringify(attrs) : evtName; return this },
         recordException(err) { record.attributes['exception.message'] = String((err as Error)?.message ?? err); return this },

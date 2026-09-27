@@ -116,6 +116,16 @@ export function makePtcToolDefinition(opts: { tools: Map<string, ToolBridge>; au
   return {
     name: 'run_code',
     description: '执行一段 erasable TypeScript 程序（PTC）——程序体内经 tools.<name>(args) 调用已注册工具',
+    // 1.4-S7：run_code 入参 schema（进模型声明面——此前无 parameters，模型看不到 code/description 形状）
+    parameters: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'erasable TS 程序体（async 函数体；经 tools.<name>(args) 调用已注册工具）' },
+        description: { type: 'string', description: '本段程序的一句话描述（审计留痕）' },
+      },
+      required: ['code', 'description'],
+      additionalProperties: false,
+    },
     // T-22 语义：PTC 与 bash 同信任级别 → 强制 write 最高约束（不可声明为 readonly）
     declaredSideEffect: 'write' as const,
     run: async (args: { code: string; description: string; toolCallId?: string }) => {

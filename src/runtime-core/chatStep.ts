@@ -15,7 +15,7 @@
  *     由 runTurn 落 turnEnd）；工具调用事件由 runTurn executeBatch 落（本层不重复）。
  */
 import type { SessionLog } from '../session/log.ts'
-import type { ModelStep, ToolCall } from '../loop/stop.ts'
+import { TurnAborted, type ModelStep, type ToolCall } from '../loop/stop.ts'
 import type { RuntimeCore } from './llm.ts'
 import type { ToolDefinition } from './types.ts'
 import { StreamRedactor } from './redaction.ts'
@@ -32,6 +32,8 @@ export interface ChatStepOptions {
   tools: ToolDefinition[]
   maxTokens?: number
   adapterId?: string
+  /** 1.4-S4（D-19）：turn 取消信号——chunk 间隙与流结束后（finish 检查前）检查，命中抛 TurnAborted */
+  signal?: { aborted: boolean }
 }
 
 /** ModelStep 加法扩展：脱敏计数留痕（S15 secretsRedacted 同名口径） */
@@ -49,7 +51,7 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
   // 2. 请求消息 = 投影（角色系统：user/assistant/toolResult 与 LlmRequest 对齐；
   //    assistant 工具调用以 { toolCall } content 形态原样透传——deriveMessages 投影即模型可见流）
   const messages = log.deriveMessages().map(m => ({
-    role: m.role as 'user' | 'assistant' | 'toolResult',
+    role: m.role as 'system' | 'user' | 'assistant' | 'toolResult',
     content: m.content,
   }))
 
@@ -66,9 +68,12 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
     tools,
     ...(maxTokens != null ? { maxTokens } : {}),
     ...(adapterId ? { adapterId } : {}),
+    ...(opts.signal ? { signal: opts.signal } : {}),
     ...(opts.log.sessionId ? { metadata: { sessionId: opts.log.sessionId, turnId, traceId: `${opts.log.sessionId}:${turnId}` } } : {}),
   })
   for await (const chunk of stream) {
+    // 1.4-S4（D-19）：chunk 间隙取消——此刻 assistant 尚未落链（流完才 append），无半截消息
+    if (opts.signal?.aborted) throw new TurnAborted()
     if (chunk.delta !== undefined) text += redactor.push(chunk.delta)
     if (chunk.toolCallDelta) {
       const idx = chunk.toolCallDelta.index ?? 0
@@ -81,6 +86,9 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
     if (chunk.error) errorDetail = chunk.error.message
     if (chunk.finishReason !== undefined) stopReason = chunk.finishReason === 'aborted' ? 'error' : chunk.finishReason
   }
+  // 1.4-S4（D-19）：finish 检查前先查取消（适配器取消路径静默收口无 finishReason——
+  // 必须先于此处的契约兜底，否则取消被误判为适配器违规）
+  if (opts.signal?.aborted) throw new TurnAborted()
   if (stopReason === undefined) {
     // 适配器层已保证首 finishReason（AL-05）；防御性兜底显式化
     throw new Error('CAR-E-LLM-FINISH: 流结束无 finishReason（适配器契约违规）')

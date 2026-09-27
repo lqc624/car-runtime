@@ -19,9 +19,12 @@ export interface LlmRequest {
   tools: ToolDefinition[]
   maxTokens?: number
   metadata?: { sessionId: string; turnId: string; traceId: string }
-  // —— 规格外加法扩展（登记：M8 收口文档 §4）——
+  // —— 规格外加法扩展（登记：M8 收口文档 §4 / 1.4-S4）——
   /** 多适配器在册时显式路由；缺省用默认适配器 */
   adapterId?: string
+  /** 1.4-S4（D-19）：turn 取消信号（runTurn 的 {aborted} 形态透传）——适配器在 attempt 前 /
+   *  chunk 间隙检查；外部取消 ≠ 失败（不 retry、不产 error chunk，静默收口由 chatStep 抛 TurnAborted） */
+  signal?: { aborted: boolean }
 }
 
 /** 工具调用流式增量（跨 chunk 聚合出完整 ToolCall） */
