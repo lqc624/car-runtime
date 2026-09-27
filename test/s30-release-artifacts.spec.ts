@@ -99,7 +99,7 @@ test('S30: release.yml 步骤面——构建/签名/上传/publish 四段齐备�
   assert.match(yml, /node --experimental-transform-types scripts\/release-artifacts\.ts/, '构建步骤调单一事实源脚本')
   assert.match(yml, /sigstore\/cosign-installer@v3\.7\.0/, 'cosign 钉版（R-4）')
   assert.match(yml, /cosign sign-blob --yes --bundle/, 'keyless 签名（--yes 免交互 + bundle 产出）')
-  assert.match(yml, /gh release upload "\$GITHUB_REF_NAME" "\$f" --clobber/, '五件套上传（--clobber 幂等）')
+  assert.match(yml, /gh release upload "\$VERSION" "\$f" --clobber/, '五件套上传（--clobber 幂等；目标=版本号——D-14 裸 tag 形态）')
   assert.match(yml, /npm publish --provenance --tag "\$TAG"/, 'publish 步骤不变（provenance 口径）')
   // 步骤序红线：upload 步在 publish 步之前（上传失败 job 红，publish 不带病出街）
   const uploadAt = yml.indexOf('gh release upload')
