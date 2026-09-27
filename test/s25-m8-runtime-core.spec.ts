@@ -198,7 +198,8 @@ test('M8: 遥测默认关——noop 句柄 + 零出站 + 零积累（可机器�
   t.getMeter().createCounter('c').add(1)
   await t.flush()
   await t.shutdown()
-  assert.deepEqual(t.stats(), { spansEnded: 0, tracesExported: 0, metricsExported: 0, droppedExports: 0 })
+  // 1.2-S3 stats 加法字段（spansSampledOut/queueOverflows）——noop 全零意图不变
+  assert.deepEqual(t.stats(), { spansEnded: 0, spansSampledOut: 0, tracesExported: 0, metricsExported: 0, droppedExports: 0, queueOverflows: 0 })
 })
 
 test('M8: 遥测显式开——OTLP/HTTP 形状出站 + stats + 端点不可达静默丢弃（BD-05）', async () => {

@@ -19,6 +19,7 @@ import { SessionLog, loadSessionLog, type SessionEvent } from './session/log.ts'
 import { SessionFileStore } from './session/store.ts'
 import { compressJsonlZstd, decodeLogBuffer, zstdAvailable } from './session/format.ts'
 import { exportForensicsBundle, verifyBundle, type ExportMeta } from './session/export.ts'
+import { lookupSession, IndexUpdater, type SessionIndexRow } from './session/indexStore.ts'
 import { runTurn } from './loop/stop.ts'
 import { Context } from './kernel/context.ts'
 import { mountPlugin } from './load/loader.ts'
@@ -26,6 +27,8 @@ import { verifyPluginFile } from './load/sigGate.ts'
 import { loadCarConfig, mergeSignatureGate } from './load/config.ts'
 import { generateSigningKeypair, signPluginFile, resolveTrustRoot } from './load/sign.ts'
 import { doctorCredentials, doctorConnectivity, doctorKeychain, doctorSignature } from './dx/doctor.ts'
+import { createTelemetryFacade, telemetryConfigFromEnv } from './runtime-core/telemetry.ts'
+import type { CounterName, AllowedLabels } from './telemetry/metrics.ts'
 
 const HELP = `用法: car <command> [args]
   run <plugin.ts> [--sig-enforce] [--config <path>]
@@ -38,6 +41,8 @@ const HELP = `用法: car <command> [args]
                                     取证包导出（断链中止；落盘读回重验，离线自证）
   session rebuild-index <root> [--db <path>]
                                     从 JSONL 重建 SQLite 会话索引（幂等）
+  session verify/replay/export 均支持 --session <id> [--db <path>]
+                                    经 SQLite 索引定位会话（1.2；缺省 db = cwd sessions-index.db；索引未收录 = 显式报错）
   doctor                环境自检
   plugin-sign keygen [--out <前缀>] [--force]
                                     生成 ed25519 签名密钥对（<前缀>.priv PKCS8 DER / <前缀>.pub SPKI base64；缺省前缀 car-release）
@@ -109,7 +114,10 @@ async function main(): Promise<number> {
       const log = new SessionLog('S-' + Date.now().toString(36))
       // §3.2.M7.5「先落日志后放行」：run 流全程逐事件 fsync 落盘（append 返回 = 已过掉电窗口）
       const store = new SessionFileStore(`session-${log.sessionId}.jsonl`)
-      log.attachSink(line => store.append(line))
+      // 1.2-S2 W3-2「更新半边」：append 后按行增量入索引（sink 先于事件入内存——行自带 seq/hash；
+      // 失败非致命——索引为派生缓存，rebuild-index 兜底语义不变；SQLite 能力缺席 = 显式登记一次后停用）
+      const indexUpdater = new IndexUpdater({ dbPath: join(process.cwd(), 'sessions-index.db'), onError: e => console.error(`[index-updater] ${e.message}`) })
+      log.attachSink(line => { store.append(line); indexUpdater.record(log.sessionId, line, store.path) })
       const hostTools: any[] = []
       ctx.plugin({ name: plugin.manifest.name, apply: (c) => {
         plugin.bindCore({
@@ -133,8 +141,9 @@ async function main(): Promise<number> {
         model: async () => ({ stopReason: 'toolUse' as const, toolCalls: [{ id: 'c1', tool: 'demo_tool', args: {} }] }),
       })
       console.log(`[3/5 收口] turnEnd=${r.reason}（steps=${r.steps}）`)
-      // 环节 4：落盘收口（全程逐事件 fsync 已发生，此处仅关句柄核对）
+      // 环节 4：落盘收口（全程逐事件 fsync 已发生，此处仅关句柄核对 + 索引 pending 落盘）
       store.close()
+      await indexUpdater.close()
       console.log(`[4/5 落盘] ${store.path}（${log.events.length} 事件逐事件 fsync，哈希链 ${log.verifyChain() === null ? '完整' : '断链!'}）`)
       // 环节 5：审计回放
       const replay = log.deriveMessages()
@@ -182,7 +191,7 @@ async function main(): Promise<number> {
       for (let i = 0; i < args.length; i++) {
         const a = args[i]!
         if (a === '--zstd') flags.zstd = true
-        else if (a === '--out' || a === '--db') flags[a.slice(2)] = args[++i] ?? ''
+        else if (a === '--out' || a === '--db' || a === '--session') flags[a.slice(2)] = args[++i] ?? ''
         else positional.push(a)
       }
       // C-02 索引重建（§3.2.M7.5 Step 3「异步可容忍，丢失可 rebuild」；幂等单事务）
@@ -200,7 +209,20 @@ async function main(): Promise<number> {
           return 0
         } catch (e) { console.error((e as Error).message); return 2 }
       }
-      const file = positional[0]
+      // 1.2-S1 W3-1：--session <id> 经索引定位会话文件（与位置路径互斥，显式拒绝歧义）。
+      // db 缺省取 cwd sessions-index.db（缺文件 = CAR-E-INDEX 显式报错提示 rebuild-index）；
+      // 索引未收录 = 显式报错（「可索引 = 可验证」：断链/坏格式会话不入索引）。
+      const sessionFlag = flags.session as string | undefined
+      let file = positional[0]
+      if (sessionFlag) {
+        if (file) { console.error('文件路径与 --session 互斥——请二选一'); return 2 }
+        const dbPath = (flags.db as string) || join(process.cwd(), 'sessions-index.db')
+        let row: SessionIndexRow | null
+        try { row = await lookupSession(dbPath, sessionFlag) } catch (e) { console.error((e as Error).message); return 2 }
+        if (!row) { console.error(`会话 "${sessionFlag}" 未收录索引（可索引 = 可验证；断链/坏格式会话不入索引）——可先 car session rebuild-index`); return 2 }
+        file = row.file
+        console.log(`[index] ${sessionFlag} → ${file}（events=${row.eventCount} encoding=${row.encoding}）`)
+      }
       if (!file) { console.error('缺少文件参数'); return 2 }
       if (sub === 'export' && !flags.out) { console.error('缺少 --out 目录参数'); return 2 }
       let loaded: ReturnType<typeof loadSessionLog>
@@ -293,14 +315,22 @@ async function main(): Promise<number> {
       const pluginsArg = collectPluginSources(rest)
       if (pluginsArg.error) { console.error(pluginsArg.error); return 2 }
       const { createCounters, assertZeroContent } = await import('./telemetry/metrics.ts')
+      // 1.2-S3 W3-3：OTel 门面经 env 通道（CAR_OTEL_ENDPOINT 唯一开关；缺省关 = noop 零出站）+
+      // S17 counters **双写桥**——快照面（登记表兜底通道）不变，meter 出站为加法通道；
+      // labels 为零内容枚举（metrics.ts AllowedLabels），出站同口径
+      const otel = createTelemetryFacade(telemetryConfigFromEnv())
       const counters = createCounters()
+      const onCount = (name: CounterName, labels?: AllowedLabels): void => {
+        counters.onCount(name, labels)
+        if (otel.enabled) otel.getMeter().createCounter(name).add(1, labels as Record<string, string> | undefined)
+      }
       if (pluginsArg.sources.length) {
         const { loadPlugins, formatLoadReport } = await import('./load/report.ts')
         const { Context } = await import('./kernel/context.ts')
         const ctx = new Context()
         const hostTools: any[] = []
         for (const src of pluginsArg.sources) {
-          const result = await loadPlugins({ source: src, signature: { ...sig.options, onCount: (n, l) => counters.onCount(n, l) } })
+          const result = await loadPlugins({ source: src, signature: { ...sig.options, onCount: (n, l) => onCount(n, l) } })
           if (result.report.stages.some(s => s.status === 'FAIL')) {
             // 加载期显式失败红线（两模式一致）：FAIL = 插件未装上，服务不得静默缺插件启动。
             // DEC-1 warn/enforce 之分仅在签名门缺签路径（warn=横幅放行，enforce=verify FAIL 走此分支）
@@ -326,13 +356,18 @@ async function main(): Promise<number> {
       const { createStdioServer } = await import('./host/stdio.ts')
       const profiles = new Map(HOST_MAPPINGS.map(h => [h.hostId, h]))
       const facade = createRuntimeFacade({ profiles })
-      const gw = new HostGateway({ facade, audit: e => counters.onCount('car_registry_decision', { source: 'registry' }) })
+      const gw = new HostGateway({ facade, audit: e => onCount('car_registry_decision', { source: 'registry' }) })
       for (const h of HOST_MAPPINGS) gw.registerHost({ hostId: h.hostId, profile: h, transport: {} as never })
       const server = createStdioServer((tool, args) => gw.handle(hostId, tool, args))
       const n = await server.serve(process.stdin, process.stdout)
       // 采集窗口收口（登记表兜底通道）：快照写 stderr（stdout 为协议通道不可污染）
       const snap = counters.snapshot()
       console.error(`[car mcp-serve] host=${hostId} requests=${n} snapshot=${JSON.stringify(snap)} zeroContent=${assertZeroContent(snap)}`)
+      // 1.2-S3：OTel 显式开路径收口 flush（shutdown = flush + 停 interval；缺省关为空转）
+      if (otel.enabled) {
+        await otel.shutdown()
+        console.error(`[car mcp-serve] otel=enabled stats=${JSON.stringify(otel.stats())}`)
+      }
       return 0
     }
     case 'plugin-sign': {

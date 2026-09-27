@@ -169,9 +169,20 @@ node --experimental-transform-types --test test/*.spec.ts
 - **边界口径（防外推）**：mcp-serve 装载接线 = 「装载 + 采集全链」——插件 factory 执行 + bindCore 冲刷注册项真实发生；**宿主会话执行插件工具的执行接线属 W1 登记后续**（sessionTurn 仍为事件批归一化），「已实装」口径不外推。sigstore keyless 主轨 / anthropic 适配器 / W1 runTurn→chatStep 接线均为延后登记项（用户裁决 2026-09-27）。
 - **翻转排期**：**2026-12-25 到期 enforce 缺省值翻转**落 12-25 后续发版（一行缺省值变更 + 决策记录归档，部署设计 §4.5.5 既有承诺）；数据前提 T-1 阈值随本迭代宿主采集链落成可观测。规划：`car-docs/10-内核v1/1.1-迭代规划.md`；收口报告：`car-docs/10-内核v1/1.1-签名收口终验报告.md`。
 
+## 1.2 状态（会话/遥测小项 W3）
+
+| `src/session/indexStore.ts` +2 | 1.2-S1/S2：`lookupSession`（--session id → 文件；db 缺文件 CAR-E-INDEX 显式报错无建文件副作用；SQLite 惰性校验错误统一收口；未收录 = null「可索引 = 可验证」）+ `upsertSessionRow`（自举建库建表）+ `IndexUpdater`（**按行增量**——sink 先于事件入内存 fail-fast 时序下行自带 seq/hash；debounce 2s + close flush；**失败非致命**绝不阻塞 append；能力缺席显式登记一次后停用；file resolve 绝对化） | M7 §4/§5 登记后续出清 |
+| `src/cli.ts` | 1.2：session verify/replay/export 三入口 `--session <id> [--db]`（与位置路径互斥显式拒绝；缺省 db = cwd sessions-index.db）+ `car run` sink 链接 IndexUpdater + mcp-serve **OTel meter 双写桥**（S17 counters 快照面不变 + shutdown flush） | 1.2 W3-1/2/3 |
+| `src/runtime-core/telemetry.ts` | 1.2-S3 生产级策略：有界重试（429/5xx/网络 ≤2 退避 1s/2s，4xx 不重试，耗尽静默丢弃永不抛错——**D-12b 口径修订「0 重试」**，隐私三原则不变）+ 采样（always_on 缺省/always_off/{ratio} head 决策，spansSampledOut）+ 批上限（maxBatchSize 512 分批 / maxQueueSize 2048 溢出丢最旧 queueOverflows）+ `telemetryConfigFromEnv`（CAR_OTEL_ENDPOINT 唯一开关/CAR_OTEL_SAMPLING/CAR_OTEL_INTERVAL_MS；非法值保持缺省禁 fail-hard）+ **1.2-BUG-1/2 修复**（OTLP metric 名混入 labels JSON / res.ok 未判 5xx 计成功——均经生产调用点接入暴露） | M8 §4.4 登记后续出清 |
+| `test/s28-session-index-followup.spec.ts` + `test/s29-otel-producer.spec.ts` | 1.2 测试：s28 6 test（lookup 四态 / CLI 三入口真进程 / 拒绝面四情形 / updater 自举+覆盖+close / 失败非致命 / car run 索引闭环）+ s29 8 test（env 七态 / 重试四路径 / res.ok 回归钉 / 采样四态 / 分批溢出 / 默认关 / 解耦静态断言 / **mcp-serve 真进程 OTLP 出站实证**） | 1.2-GO |
+
+- **1.2 工程收口（2026-09-27）**：M7 §4/§5 + M8 §4.4 登记后续三子项全部出清。全量 **263（260 PASS + 3 能力门控 skip / 0 fail）** + tsc strict 0 错 + secrets-scan 101 文件 0 命中。QA 两轮制执行。**1.2-BUG-1（OTLP metric 名混 labels）为生产调用点核查直接产出**——meter 桥接入即暴露 M8 最小实现掩盖的缺陷。
+- **边界口径（防外推）**：OTel span 面（turn/step span）**仍无生产调用点**（随 W1 登记后续）；trace 传播（parentSpanId/共享 trace）随 W1 设计；mcp-serve 出站现仅 metrics（counter 桥）。
+- **遗留登记**：W1 = 1.3 头号候选（含 D-12a TLS loopback 豁免实装、car run 装配面重做〔demo_tool 撞名观察项出清〕）；car run demo_tool 撞名 DEPCYCLE 为预存在边缘（登记不修，W1 出清）。规划：`car-docs/10-内核v1/1.2-迭代规划.md`；收口报告：`car-docs/10-内核v1/1.2-收口终验报告.md`。
+
 ## 状态
 
-- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ M6 179/179（2026-09-15 收口）｜ M7 全量 195（192 PASS + 3 能力门控 skip，2026-09-19 收口）｜ **M5-S28 装载签名门 全量 204（201 PASS + 3 skip，2026-09-26）** ｜ **M8 运行时底座 全量 231（228 PASS + 3 skip，2026-09-26 收口，§3.2 八模块全部收口）** ｜ **1.1 签名收尾最小集 全量 249（246 PASS + 3 skip，2026-09-27 收口，1.1.0 已发布，enforce 翻转准备就绪）**
+- **版本主线**：S1-S4 48/48 ｜ M2 89/89（v0.2.0）｜ M3 127/127（v0.3.0）｜ M4 139/139（**1.0.0-rc.1 已发布**）｜ M5 156/156（DEC-4 预埋项转正）｜ M6 179/179（2026-09-15 收口）｜ M7 全量 195（192 PASS + 3 能力门控 skip，2026-09-19 收口）｜ **M5-S28 装载签名门 全量 204（201 PASS + 3 skip，2026-09-26）** ｜ **M8 运行时底座 全量 231（228 PASS + 3 skip，2026-09-26 收口，§3.2 八模块全部收口）** ｜ **1.1 签名收尾最小集 全量 249（246 PASS + 3 skip，2026-09-27 收口，1.1.0 已发布，enforce 翻转准备就绪）** ｜ **1.2 会话/遥测小项 全量 263（260 PASS + 3 skip，2026-09-27 收口，1.2.0 发布编排中）**
 - **1.0.0 正式发布（2026-09-26，S29/S30）**：npm `@lqc123qwe/car-runtime@1.0.0` 在架——**dist-tag latest → 1.0.0，rc 保留指向 1.0.0-rc.1**（§1.1 口径）；SLSA provenance（Actions OIDC，透明日志在案）；GitHub Release v1.0.0 六资产（tgz/bundle/SHA256SUMS/SBOM/审计/公钥）；**post-publish 全链 13 PASS / 0 DRY-RUN / 0 FAIL** + 外部验证者等价检查（Release 实下载件 SHA256 MATCH + cosign Verified OK）。**宽限期时钟：2026-09-26 起算，2026-12-25 到期 verifier 默认值 warn→enforce 翻转（计划内变更）**。终验报告：`car-docs/10-内核v1/M5-S30-1.0收口终验报告.md`。发布工程事件：j16 首跑 E403（npm 2FA 策略 vs granular token 无 bypass——清单预设回退路径兑现）→ bypass token re-run 绿；G-09 期望 tag 动态化（`4c84b17`）在真实发布兑现价值。
 - **1.0.0-rc.1 已发布（2026-09-09）**：npm `@lqc123qwe/car-runtime@1.0.0-rc.1`（rc + latest 双 tag，SLSA provenance 在案）+ GitHub Release 6 制品；发布预演 **13 PASS / 0 DRY-RUN / 0 FAIL**（c762b72）。S22 GO 清单已全绿收口。
 - **轨道 A 三项全部完成**：E-1 WSL2 逃逸矩阵 **20/20 PASS 零逃逸**（2026-09-07，G-07 转 PASS）｜ E-3 远端发布通道 **13/13 全门禁 PASS**（2026-09-09，G-08/09/10 转 PASS）｜ E-2 Windows koffi FFI **四判据双环境全 PASS**（S24/S25/S26，2026-09-09~10；本机非提权 + windows-latest 提权 runner 双绿，CI 门禁已接入）。

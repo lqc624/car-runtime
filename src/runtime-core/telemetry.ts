@@ -4,8 +4,17 @@
  * 口径（§3.2.M8.5 关键约束，逐条落地）：
  *  - 默认关：无端点配置时不初始化任何 exporter——无配置 = noop 句柄 + 零出站（可机器断言）；
  *  - 显式开：用户配置端点即视为开启（CAR_OTEL_ENDPOINT 或显式 config 传入）；
- *  - 端点归用户：数据只发往用户自配 E-05；OTLP/HTTP JSON（fetch），导出超时 5s、0 重试、
- *    端点不可达静默丢弃（BD-05——不抛错、不重试、不落审计）；
+ *  - 端点归用户：数据只发往用户自配 E-05；OTLP/HTTP JSON（fetch），导出超时 5s；
+ *    1.2-S3 生产级策略（D-12b 口径修订，2026-09-27）：**0 重试 → 有界重试 ≤2**（仅 429/5xx/
+ *    网络错误，退避 1s/2s；4xx 业务错不重试）——重试耗尽静默丢弃 + droppedExports 计数，
+ *    永不抛错（BD-05「不抛错、不落审计」收紧保持）；隐私三原则不变（数据仍只发用户自配端点）；
+ *  - 采样（1.2-S3 加法）：head 采样于 span.end() 决策——always_on（缺省，全量，1.1 行为不变）/
+ *    always_off / { ratio }（概率）；被采出计入 spansSampledOut；采样只减少出站数据（隐私正向）；
+ *  - 批处理上限（1.2-S3 加法）：maxBatchSize 单请求分批（512）+ maxQueueSize buffer 上限
+ *    （2048，溢出丢最旧 + queueOverflows 计数）——内存有界；
+ *  - env 通道（1.2-S3 加法）：telemetryConfigFromEnv——CAR_OTEL_ENDPOINT（唯一开关）/
+ *    CAR_OTEL_SAMPLING（always_on|always_off|0..1，非法值保持缺省——遥测面禁 fail-hard）/
+ *    CAR_OTEL_INTERVAL_MS / CAR_OTEL_SERVICE_NAME；
  *  - 严格解耦：本文件零 import 自 session/*（遥测与审计日志禁止混流）——测试做静态断言；
  *  - S17 零内容计数器（telemetry/metrics.ts）是登记表兜底通道，与本门面并存互补：
  *    本面是 OTel 形态的出站通道，不承接 S17 的零内容红线语义（内容治理属调用方）；
@@ -13,6 +22,8 @@
  *    不引入 @opentelemetry/* 依赖（项目零依赖红线，README engines 纪律）。
  */
 import { randomBytes } from 'node:crypto'
+
+export type SamplingSpec = 'always_on' | 'always_off' | { ratio: number }
 
 export interface TelemetryConfig {
   /** 用户自配 OTLP/HTTP 端点（如 https://otel.example.internal）——无值 = 默认关 */
@@ -23,6 +34,19 @@ export interface TelemetryConfig {
   exportTimeoutMs?: number
   /** 自动导出间隔 ms；0（缺省）= 仅手动 flush（测试/收口时点调用） */
   intervalMs?: number
+  // —— 1.2-S3 生产级策略（加法；缺省值保持 1.1 行为）——
+  /** 有界重试上限（仅 429/5xx/网络错误；§3.5.4 基线 ≤2；D-12b 口径修订） */
+  retryLimit?: number
+  /** 重试退避序列 ms（缺省 [1000, 2000]；测试可注入） */
+  retryBackoffMs?: number[]
+  /** 采样（缺省 always_on = 全量）；head 决策于 span.end() */
+  sampling?: SamplingSpec
+  /** 单请求 spans 上限（超限分批；缺省 512） */
+  maxBatchSize?: number
+  /** span buffer 上限（溢出丢最旧 + queueOverflows 计数；缺省 2048） */
+  maxQueueSize?: number
+  /** 测试注入睡眠（退避可观测；缺省真实定时器） */
+  sleep?: (ms: number) => Promise<void>
 }
 
 export interface TelemetrySpan {
@@ -47,9 +71,14 @@ export interface TelemetryMeter {
 
 export interface TelemetryStats {
   spansEnded: number
+  /** 1.2-S3 加法：head 采样被采出的 span 数（缺省 always_on 下恒 0） */
+  spansSampledOut: number
+  /** 成功出站的 OTLP 请求计数（traces/metrics 分批后按请求计） */
   tracesExported: number
   metricsExported: number
   droppedExports: number
+  /** 1.2-S3 加法：buffer 溢出丢最旧计数（maxQueueSize 上限） */
+  queueOverflows: number
 }
 
 export interface TelemetryFacade {
@@ -76,6 +105,33 @@ const noopSpan = (): TelemetrySpan => ({
 })
 const NOOP_TRACER: TelemetryTracer = { startSpan: () => noopSpan() }
 const NOOP_METER: TelemetryMeter = { createCounter: () => ({ add() {} }) }
+const NOOP_STATS: TelemetryStats = { spansEnded: 0, spansSampledOut: 0, tracesExported: 0, metricsExported: 0, droppedExports: 0, queueOverflows: 0 }
+
+/**
+ * 1.2-S3 env 配置通道：CAR_OTEL_ENDPOINT（唯一开关）/ CAR_OTEL_SAMPLING（always_on|always_off|0..1，
+ * 非法值保持缺省 always_on——遥测面禁 fail-hard）/ CAR_OTEL_INTERVAL_MS / CAR_OTEL_SERVICE_NAME。
+ * 无 endpoint = null（默认关，noop 门面）。
+ */
+export function telemetryConfigFromEnv(env: NodeJS.ProcessEnv = process.env): TelemetryConfig | null {
+  const endpoint = env.CAR_OTEL_ENDPOINT
+  if (!endpoint) return null
+  const cfg: TelemetryConfig = { endpoint }
+  if (env.CAR_OTEL_SERVICE_NAME) cfg.serviceName = env.CAR_OTEL_SERVICE_NAME
+  if (env.CAR_OTEL_INTERVAL_MS) {
+    const n = Number(env.CAR_OTEL_INTERVAL_MS)
+    if (Number.isFinite(n) && n >= 0) cfg.intervalMs = n
+  }
+  if (env.CAR_OTEL_SAMPLING) {
+    const s = env.CAR_OTEL_SAMPLING
+    if (s === 'always_on' || s === 'always_off') cfg.sampling = s
+    else {
+      const r = Number(s)
+      if (Number.isFinite(r) && r >= 0 && r <= 1) cfg.sampling = { ratio: r }
+      // 非法采样值：保持缺省 always_on（登记口径，禁 fail-hard）
+    }
+  }
+  return cfg
+}
 
 // ==================== 活动门面（显式开路径） ====================
 
@@ -104,36 +160,61 @@ export function createTelemetryFacade(
       getMeter: () => NOOP_METER,
       flush: async () => {},
       shutdown: async () => {},
-      stats: () => ({ spansEnded: 0, tracesExported: 0, metricsExported: 0, droppedExports: 0 }),
+      stats: () => ({ ...NOOP_STATS }),
     }
   }
 
   const fetchImpl = opts.fetchImpl ?? fetch
   const now = opts.now ?? Date.now
+  const sleep = config?.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
   const timeoutMs = config?.exportTimeoutMs ?? 5_000
+  const retryLimit = config?.retryLimit ?? 2
+  const backoff = config?.retryBackoffMs ?? [1_000, 2_000]
+  const sampling = config?.sampling ?? 'always_on'
+  const maxBatchSize = config?.maxBatchSize ?? 512
+  const maxQueueSize = config?.maxQueueSize ?? 2_048
   const baseHeaders = { 'content-type': 'application/json', ...(config?.headers ?? {}) }
   const serviceName = config?.serviceName ?? 'car-runtime'
 
   const spans: SpanRecord[] = []
-  const counters = new Map<string, { labels: Record<string, string>; value: number }>()
-  const stats: TelemetryStats = { spansEnded: 0, tracesExported: 0, metricsExported: 0, droppedExports: 0 }
+  // 计数器键 = name+labels JSON（聚合去重）；记录体分离保存 name/labels——
+  // OTLP metric 名必须是纯 name（1.2-BUG-3：键直当名会把 labels JSON 拼进 metric 名，
+  // M8 最小实现即存在，meter 零生产调用点掩盖至今，1.2-S3 meter 桥接入时暴露）
+  const counters = new Map<string, { name: string; labels: Record<string, string>; value: number }>()
+  const stats: TelemetryStats = { spansEnded: 0, spansSampledOut: 0, tracesExported: 0, metricsExported: 0, droppedExports: 0, queueOverflows: 0 }
   let tracer: TelemetryTracer | null = null
   let meter: TelemetryMeter | null = null
   let timer: ReturnType<typeof setInterval> | null = null
   let flushing = false
 
+  /**
+   * OTLP 出站（D-12b 口径：有界重试）——ok / 429/5xx/网络错误退避重试 ≤retryLimit /
+   * 4xx 业务错不重试（端点配置类问题，重试无益）；重试耗尽返回 false 由调用方计入
+   * droppedExports（静默丢弃，永不抛错——BD-05「不抛错」收紧保持）。
+   */
   const exportOtlp = async (path: string, body: unknown): Promise<boolean> => {
-    try {
-      // 单次尝试 + 有界超时（§3.5.4：OTel 导出 5s / 0 重试）；失败静默丢弃（BD-05）
-      await fetchImpl(endpoint + path, {
-        method: 'POST',
-        headers: baseHeaders,
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs),
-      })
-      return true
-    } catch {
-      return false
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await fetchImpl(endpoint + path, {
+          method: 'POST',
+          headers: baseHeaders,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(timeoutMs),
+        })
+        if (res.ok) return true
+        if ((res.status === 429 || res.status >= 500) && attempt < retryLimit) {
+          await sleep(backoff[Math.min(attempt, backoff.length - 1)]!)
+          continue
+        }
+        return false
+      } catch {
+        // 网络错误/超时：可重试类
+        if (attempt < retryLimit) {
+          await sleep(backoff[Math.min(attempt, backoff.length - 1)]!)
+          continue
+        }
+        return false
+      }
     }
   }
 
@@ -141,13 +222,15 @@ export function createTelemetryFacade(
     if (flushing) return
     flushing = true
     try {
-      const spanBatch = spans.splice(0, spans.length)
-      if (spanBatch.length) {
+      const spanQueue = spans.splice(0, spans.length)
+      // maxBatchSize 分批（1.2-S3）：tracesExported 按成功出站请求计数
+      for (let i = 0; i < spanQueue.length; i += maxBatchSize) {
+        const batch = spanQueue.slice(i, i + maxBatchSize)
         const body = {
           resource: { attributes: [{ key: 'service.name', value: { stringValue: serviceName } }] },
           scopeSpans: [{
             scope: { name: 'car-runtime' },
-            spans: spanBatch.map(s => ({
+            spans: batch.map(s => ({
               traceId: s.traceId,
               spanId: s.spanId,
               ...(s.parentSpanId ? { parentSpanId: s.parentSpanId } : {}),
@@ -170,8 +253,8 @@ export function createTelemetryFacade(
           resource: { attributes: [{ key: 'service.name', value: { stringValue: serviceName } }] },
           scopeMetrics: [{
             scope: { name: 'car-runtime' },
-            metrics: batch.map(([name, c]) => ({
-              name,
+            metrics: batch.map(([, c]) => ({
+              name: c.name,
               sum: {
                 aggregationTemporality: 'AGGREGATION_TEMPORALITY_CUMULATIVE',
                 dataPoints: Object.entries(c.labels).length
@@ -209,8 +292,15 @@ export function createTelemetryFacade(
         recordException(err) { record.attributes['exception.message'] = String((err as Error)?.message ?? err); return this },
         end() {
           record.endMs = now()
-          spans.push(record)
           stats.spansEnded++
+          // head 采样于 end() 决策（1.2-S3）：缺省 always_on 全量（1.1 行为不变）；采样只减少出站
+          const keep = sampling === 'always_on' ? true
+            : sampling === 'always_off' ? false
+            : Math.random() < sampling.ratio
+          if (!keep) { stats.spansSampledOut++; return }
+          // buffer 上限：溢出丢最旧 + 计数（内存有界）
+          if (spans.length >= maxQueueSize) { spans.shift(); stats.queueOverflows++ }
+          spans.push(record)
         },
       }
     },
@@ -221,7 +311,7 @@ export function createTelemetryFacade(
       return {
         add(value, labels = {}) {
           const key = name + JSON.stringify(labels)
-          const cur = counters.get(key) ?? { labels, value: 0 }
+          const cur = counters.get(key) ?? { name, labels, value: 0 }
           cur.value += value
           counters.set(key, cur)
         },
