@@ -224,7 +224,17 @@ test('S29: mcp-serve 生产接线——CAR_OTEL_ENDPOINT 显式开 → S17 count
       child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'session_start', arguments: { hostSessionId: 's29' } } }) + '\n')
       child.stdin.end()
       child.on('exit', () => done())
-      await Promise.race([closed, new Promise((_, rej) => setTimeout(() => rej(new Error(`mcp-serve 超时\n${err}`)), 20_000))])
+      // macOS runner 慢启动容差（60s）；落选的 race timer 必须 clear——未清时它把事件循环
+      // 挂满整个超时窗（本文件曾因此空转 20s，慢 runner 上叠加成 j03 假失败形态）
+      let raceTimer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          closed,
+          new Promise<never>((_, rej) => { raceTimer = setTimeout(() => rej(new Error(`mcp-serve 超时\n${err}`)), 60_000) }),
+        ])
+      } finally {
+        if (raceTimer) clearTimeout(raceTimer)
+      }
       // S17 快照面不变（双写非迁移）
       assert.match(err, /snapshot=/)
       assert.match(err, /zeroContent=true/)
@@ -235,6 +245,7 @@ test('S29: mcp-serve 生产接线——CAR_OTEL_ENDPOINT 显式开 → S17 count
       assert.ok(names.includes('car_registry_decision'), 'S17 counter 名出站')
       assert.equal(/sk-|ghp_/.test(JSON.stringify(bodies)), false, '出站体无凭据形态（零内容口径）')
     } finally {
+      server.closeAllConnections()
       server.close()
     }
   })
