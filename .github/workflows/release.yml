@@ -33,13 +33,14 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           cosign sign-blob --yes --bundle "dist/car-runtime-${VERSION}.tgz.sig.bundle" "dist/car-runtime-${VERSION}.tgz"
           echo "{\"stage\":\"cosign-keyless\",\"detail\":\"signed car-runtime-${VERSION}.tgz (keyless OIDC + Rekor)\",\"ts\":$(date +%s%3N)}" >> dist/release-audit.jsonl
-      - name: Upload release assets (W4: no manual drag-and-drop)
+      - name: "Upload release assets (W4 - zero manual drag-and-drop)"
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           for f in dist/car-runtime-${VERSION}.tgz dist/car-runtime-${VERSION}.tgz.sig.bundle dist/SHA256SUMS dist/sbom.json dist/release-audit.jsonl; do
-            gh release upload "$GITHUB_REF_NAME" "$f" --clobber
+            # 上传目标 = 包版本号（D-14 裸 tag 形态：release tag == version）；dispatch 触发亦可用
+            gh release upload "$VERSION" "$f" --clobber
           done
       - name: Publish to npm with provenance
         # dist-tag 按版本形态动态选择：prerelease（如 1.0.0-rc.1）→ rc；稳定版（1.0.0）→ latest。

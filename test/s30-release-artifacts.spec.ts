@@ -109,6 +109,15 @@ test('S30: release.yml 步骤面——构建/签名/上传/publish 四段齐备�
   assert.match(yml, /release-audit\.jsonl/, '审计文件在签名步被追加')
 })
 
+test('S30: release.yml 解析安全——name 行不得含未引号冒号（1.3-BUG-2：`name: x (y: z)` 令 YAML 解析崩溃，release 事件静默失效）', () => {
+  // startup failure 形态：run.name = 文件路径、jobs 为空、release 事件不触发——结构断言在此钉死本失败类
+  const offenders = yml.split('
+').filter(l => /^\s*- name: [^'"].*:\s/.test(l))
+  assert.deepEqual(offenders, [], `以下 step name 含未引号冒号+空格：${JSON.stringify(offenders)}`)
+  // 上传目标 = 包版本号（D-14 裸 tag：release tag == version；dispatch 触发亦可用）
+  assert.match(yml, /gh release upload "\$VERSION" "\$f" --clobber/)
+})
+
 test('S30: release.yml keyless 验证口径——sign-blob 无 --key（keyless 非 keypair）', () => {
   // 正式轨不得使用本地 keypair（私钥不出本地红线）；keypair 仅存在于本地预演轨 release-pipeline.ts
   const signStep = yml.slice(yml.indexOf('cosign sign-blob'))
