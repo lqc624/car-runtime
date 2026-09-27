@@ -4,10 +4,17 @@ on:
   release:
     types: [published]
 permissions:
-  contents: read
+  # 1.3-S3（W4-2）：contents 提升为 write——gh release upload 资产上传需要；
+  # id-token: write 为 keyless cosign（OIDC + Rekor）凭据源（D-15 正式轨）
+  contents: write
   id-token: write
-# J-16 release-merge（M2 §2.3）：tag/Release 触发 → npm publish --provenance。
-# SBOM/SHA256SUMS/cosign 由 scripts/release-pipeline.ts 承载（本地/沙箱外轨，M3 §2.1.2 单源编译已入 CI j01）。
+# J-16 release-merge（M2 §2.3）+ 1.3 W4 全自动化：
+#   构建制品（release-artifacts.ts——与本地 release-pipeline.ts 单一事实源，R-3）
+#   → cosign keyless 签名 tgz（OIDC + Rekor 透明日志；私钥不出本地，D-15 正式轨）
+#   → 上传五件套到 Release（gh release upload --clobber；消除 1.0 错挂/1.2 树漂移的人工拖拽面）
+#   → npm publish --provenance（原步不动）。
+# 步骤序红线：upload 先于 publish——上传失败 job 即红，publish 不带病出街。
+# 回退预案（R-1，演练预案非静默）：keyless 签名/上传失败时可临时人工拖拽资产，事后修复重发。
 jobs:
   j16-release-merge:
     runs-on: ubuntu-latest
@@ -17,6 +24,23 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org/
+      - name: Build release artifacts (single-source with local pipeline, W4-1)
+        run: node --experimental-transform-types scripts/release-artifacts.ts
+      - name: Install cosign (pinned, R-4)
+        uses: sigstore/cosign-installer@v3.7.0
+      - name: Keyless sign tarball (OIDC + Rekor, D-15 formal track)
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          cosign sign-blob --yes --bundle "dist/car-runtime-${VERSION}.tgz.sig.bundle" "dist/car-runtime-${VERSION}.tgz"
+          echo "{\"stage\":\"cosign-keyless\",\"detail\":\"signed car-runtime-${VERSION}.tgz (keyless OIDC + Rekor)\",\"ts\":$(date +%s%3N)}" >> dist/release-audit.jsonl
+      - name: Upload release assets (W4: no manual drag-and-drop)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          for f in dist/car-runtime-${VERSION}.tgz dist/car-runtime-${VERSION}.tgz.sig.bundle dist/SHA256SUMS dist/sbom.json dist/release-audit.jsonl; do
+            gh release upload "$GITHUB_REF_NAME" "$f" --clobber
+          done
       - name: Publish to npm with provenance
         # dist-tag 按版本形态动态选择：prerelease（如 1.0.0-rc.1）→ rc；稳定版（1.0.0）→ latest。
         # M5 §1.1 口径：1.0 发布时 latest→1.0.0，rc tag 保留指向 rc.1 不回指——稳定版禁止 --tag rc。

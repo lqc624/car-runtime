@@ -12,6 +12,7 @@ import { execSync, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { buildReleaseArtifacts, releaseAssetNames } from './release-artifacts.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
 const DIST = join(ROOT, 'dist')
@@ -76,16 +77,13 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
 // ── 阶段 2：构建与制品 ──
 {
   const stage = 'S2-构建与制品'
-  mkdirSync(DIST, { recursive: true })
-  // TS 直跑形态制品清单（原生编译为零——node:sqlite 内置）
-  const files = [...walk(join(ROOT, 'src'), '.ts'), join(ROOT, 'package.json'), join(ROOT, 'README.md')]
-  const sbom = {
-    bomFormat: 'CAR-SBOM', specVersion: '0.1', version: VERSION,
-    components: files.map(f => ({ type: 'file', path: f.replace(ROOT, '').replace(/\\/g, '/'), sha256: sha256(readFileSync(f, 'utf-8')) })),
-    runtimeDependencies: [],
-  }
-  writeFileSync(join(DIST, 'sbom.json'), JSON.stringify(sbom, null, 2))
-  record(stage, 'G-05 SBOM 生成', true, `${files.length} 个组件（运行时依赖 0 项）`)
+  // 1.3-S2（W4-1）：制品构建抽至 release-artifacts.ts（本地流水线与 CI j16 双端单一事实源——
+  // 同仓树逐字节同制品）；此处产出 tgz + SHA256SUMS + sbom，G-11 在 S6 独立复核
+  const built = buildReleaseArtifacts({
+    version: VERSION,
+    onRecord: (s, detail) => auditLog(stage, s.toUpperCase(), 'PASS', { detail }),
+  })
+  record(stage, 'G-05 SBOM 生成', true, `${built.components} 个组件（运行时依赖 0 项；tar.gz ${built.bytes} bytes 已构建——W4 单一事实源）`)
   // 版本一致性：精确 semver（含 prerelease——1.0-rc.x 是 rc 渠道合法形态；禁止 build 元数据与 loose 版本）
   const ok = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(VERSION) && !/\+/.test(VERSION)
   record(stage, 'G-06 版本一致性', ok, `version=${VERSION}（精确 semver 含 prerelease——rc 渠道合法形态；npm 不可变语义：禁止覆盖已发布版本）`)
@@ -117,7 +115,7 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
 }
 
 // ── 阶段 4-5：provenance 与远端归档（远端依赖，DRY-RUN）──
-// G-08 cosign 签名已移至 S6 之后本地实签（见 S6b）
+// G-08 双轨语义（1.3 D-15）：本地 keypair no-tlog = 预演态（S6b）；CI j16 keyless OIDC+Rekor = 正式态
 // G-10：REMOTE_CHECK=1 且具备 GH_TOKEN 时实查 Release 资产齐备性，否则 DRY-RUN
 {
   const stage = 'S4-provenance与远端归档'
@@ -135,12 +133,13 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
         } catch { return [] }
       }
       const assets = [...new Set([...fetchAssets(`v${VERSION}`), ...fetchAssets(VERSION)])]
-      const need = [`car-runtime-${VERSION}.tgz`, `car-runtime-${VERSION}.tgz.sig.bundle`, 'SHA256SUMS', 'sbom.json', 'release-audit.jsonl', 'car-release.pub']
+      // 资产清单单一事实源（1.3 W4-4/R-3）：releaseAssetNames（五件套，无 car-release.pub）
+      const need = releaseAssetNames(VERSION)
       const missing = need.filter(n => !assets.includes(n))
       g10Ok = missing.length === 0
       g10Dry = false
       g10Detail = g10Ok
-        ? `Release v${VERSION} 归档齐备（${assets.length} assets：tgz+签名bundle+SHA256SUMS+SBOM+审计+公钥）`
+        ? `Release v${VERSION} 归档齐备（${assets.length} assets：tgz+签名bundle+SHA256SUMS+SBOM+审计——D-14 五件套）`
         : `Release 资产缺失：${missing.join(', ')}`
     } catch { /* 远端不可达或 Release 不存在 → 保持 DRY-RUN */ }
   }
@@ -171,22 +170,18 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
   record(stage, 'G-09 npm provenance（OIDC 可信发布）', g9Ok, g9Detail, g9Dry)
 }
 
-// ── 阶段 6：本地制品封装 + 校验和 ──
+// ── 阶段 6：制品校验（G-11：对 S2 产出的制品做独立复核，不重建不写死） ──
 const TARBALL = join(DIST, `car-runtime-${VERSION}.tgz`)
 {
   const stage = 'S6-制品封装'
-  execSync(`git archive --format=tar.gz -o "${TARBALL}" HEAD`, { cwd: ROOT })
-  const bytes = readFileSync(TARBALL)
   // 校验和必须对「裸字节」求哈希——曾误写为 sha256(bytes.toString('base64'))，
   // 记录值成为 base64 字符串的哈希，外部 sha256sum 校验必然失败（rc.1 已发生）。
-  const sumsPath = join(DIST, 'SHA256SUMS')
-  writeFileSync(sumsPath, `${sha256(bytes)}  car-runtime-${VERSION}.tgz\n`)
-  // 自检：从落盘文件读回，复核其确实等于制品裸字节哈希（门禁不可写死为 true）
-  const [recorded, recordedName] = readFileSync(sumsPath, 'utf-8').trim().split(/\s+/)
+  const bytes = readFileSync(TARBALL)
   const actual = sha256(bytes)
+  const [recorded, recordedName] = readFileSync(join(DIST, 'SHA256SUMS'), 'utf-8').trim().split(/\s+/)
   const ok = recorded === actual && recordedName === `car-runtime-${VERSION}.tgz`
   record(stage, 'G-11 制品校验和（SHA-256）', ok, ok
-    ? `car-runtime-${VERSION}.tgz (${bytes.length} bytes) → SHA256SUMS ${recorded.slice(0, 16)}…（已按裸字节复核，外部 sha256sum 可验证）`
+    ? `car-runtime-${VERSION}.tgz (${bytes.length} bytes) → SHA256SUMS ${recorded!.slice(0, 16)}…（S2 产出独立复核，外部 sha256sum 可验证）`
     : `校验和自检失败：SHA256SUMS 记录 ${recorded} ≠ 制品裸字节哈希 ${actual}`)
 }
 
@@ -202,7 +197,7 @@ const TARBALL = join(DIST, `car-runtime-${VERSION}.tgz`)
     '--signing-config', sigConfig, '--bundle', bundle, TARBALL], { env })
   execFileSync(cosignBin, ['verify-blob', '--key', join(keysDir, 'car-release.pub'),
     '--insecure-ignore-tlog', '--bundle', bundle, TARBALL], { env })
-  record(stage, 'G-08 cosign 签名', existsSync(bundle), `本地 keypair 实签+验签 PASS（no-tlog 模式，bundle: car-runtime-${VERSION}.tgz.sig.bundle）；正式发布可在 CI 切 keyless OIDC + Rekor`)
+  record(stage, 'G-08 cosign 签名', existsSync(bundle), `本地 keypair 实签+验签 PASS（no-tlog 模式，bundle: car-runtime-${VERSION}.tgz.sig.bundle）——D-15 预演轨；正式轨 = CI j16 keyless OIDC+Rekor`)
 }
 
 // ── 阶段 7：dist-tag 晋级模拟 + 回滚演练（发布渠道语义）──
@@ -229,5 +224,5 @@ console.log('\n===== 发布工程预演结果 =====')
 for (const r of results) console.log(`  [${r.verdict.padEnd(7)}] ${r.stage} / ${r.gate}${r.detail ? ' — ' + r.detail : ''}`)
 const pass = results.filter(r => r.verdict === 'PASS').length
 const dry = results.filter(r => r.verdict === 'DRY-RUN').length
-console.log(`\n合计：${pass} PASS / ${dry} DRY-RUN / 0 FAIL（制品：dist/：SBOM + tar.gz + SHA256SUMS + registry-sim + release-audit.jsonl）`)
-console.log('DRY-RUN 项正式执行前置：GitHub 仓库 + OIDC + npm publish 凭据 + cosign + Linux CI runner（逃逸矩阵 G-07）')
+console.log(`\n合计：${pass} PASS / ${dry} DRY-RUN / 0 FAIL（制品：dist/ 五件套——tar.gz + 签名bundle + SHA256SUMS + sbom + release-audit）`)
+console.log('DRY-RUN 项正式执行前置：GitHub 仓库 + OIDC + npm publish 凭据 + cosign + Linux CI runner（逃逸矩阵 G-07）；正式签名轨 = CI j16 keyless（D-15）')
