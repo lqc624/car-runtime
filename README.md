@@ -163,7 +163,8 @@ node --experimental-transform-types --test test/*.spec.ts
 | `src/cli.ts` | 1.1：`car plugin-sign keygen/sign/verify`（退出码家规 0/1/2；私钥 0600；重复 keygen 拒绝覆盖）+ `--config` 通道接入 run/reload/mcp-serve + **mcp-serve 装载接线**（`--plugin` 可重复 / CAR_PLUGINS env；六阶段门 verify 先于 import()；car_load_total/car_unsigned_confirmed 全链进 stderr 快照；装载 FAIL = 启动中止 exit 1 两模式一致，warn 仅豁免缺签） | 1.1 W2-1/W2-4 |
 | `test/s26-signature-closeout.spec.ts` + `test/s27-host-load-wiring.spec.ts` + `test/s18.spec.ts` 边界行 | 1.1 测试：s26 13 test（keygen 签验闭环 / 手工口径字节等价 / CLI spawn 全链退出码 / 配置 fail-visible / 优先级四向 / doctor 三通道 / keychain 平台三态）+ s27 4 test（真进程装载四态：warn 全链 / enforce fail-closed / parse FAIL 不静默 / 配置通道好签名）+ s18 无 --plugin 边界断言 | 1.1-GO |
 
-- **1.1 工程收口（2026-09-27）**：S30 §8 工程侧清单签名收尾五子项全部兑现（plugin-sign CLI / doctor 签名行 / 配置文件通道 / mcp-serve 装载接线+采集全链 / keychain 专测）。全量 **249（246 PASS + 3 能力门控 skip / 0 fail）** + tsc strict 0 错 + secrets-scan 97 文件 0 命中（密钥/签名夹具仅运行期临时目录——R-1）。QA 两轮制执行。
+- **1.1 工程收口（2026-09-27）**：S30 §8 工程侧清单签名收尾五子项全部兑现（plugin-sign CLI / doctor 签名行 / 配置文件通道 / mcp-serve 装载接线+采集全链 / keychain 专测）。全量 **249（246 PASS + 3 能力门控 skip / 0 fail）** + tsc strict 0 错 + secrets-scan 97 文件 0 命中（密钥/签名夹具仅运行期临时目录——R-1）。QA 两轮制执行。**CI 收官（run 36304931085）：16/16 全绿**。
+- **1.1 发布编排（S6，D-11b ①直发）**：13 门禁本地预演 **11 PASS / 2 DRY-RUN / 0 FAIL**（G-07 逃逸矩阵本机 WSL 实跑 20/20；G-09/G-10 远端口径 DRY-RUN）；version 1.1.0（`3d8658e`）已推送 main；dist 六资产就绪（tgz/bundle/SHA256SUMS/SBOM/审计/公钥）。**Release v1.1.0 创建（用户）→ j16 自动 `npm publish --provenance --tag latest` → post-publish REMOTE_CHECK=1 复跑**。
 - **边界口径（防外推）**：mcp-serve 装载接线 = 「装载 + 采集全链」——插件 factory 执行 + bindCore 冲刷注册项真实发生；**宿主会话执行插件工具的执行接线属 W1 登记后续**（sessionTurn 仍为事件批归一化），「已实装」口径不外推。sigstore keyless 主轨 / anthropic 适配器 / W1 runTurn→chatStep 接线均为延后登记项（用户裁决 2026-09-27）。
 - **翻转排期**：**2026-12-25 到期 enforce 缺省值翻转**落 12-25 后续发版（一行缺省值变更 + 决策记录归档，部署设计 §4.5.5 既有承诺）；数据前提 T-1 阈值随本迭代宿主采集链落成可观测。规划：`car-docs/10-内核v1/1.1-迭代规划.md`；收口报告：`car-docs/10-内核v1/1.1-签名收口终验报告.md`。
 
