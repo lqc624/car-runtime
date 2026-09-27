@@ -8,7 +8,7 @@
  *    索引只收录链完整会话（审计面口径：可索引 = 可验证）；
  *  - 物理编码 layout-blind：plain / zstd 统一经 format.ts 装载，索引记录 encoding 供检索。
  */
-import { readdirSync, existsSync } from 'node:fs'
+import { readdirSync, existsSync, realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { loadSessionLog, type SessionEvent } from './log.ts'
 
@@ -171,9 +171,15 @@ export class IndexUpdater {
     const ts = Number(e.ts)
     const hash = typeof e.hash === 'string' ? e.hash : ''
     if (!Number.isFinite(seq) || !Number.isFinite(ts) || !hash) return
+    // realpath 规范化（1.2-BUG-4）：macOS tmpdir 为 symlink（/var → /private/var），子进程 cwd 由
+    // OS 返回物理路径——resolve() 不解析符号链接，父子进程会产出同一文件的两个别名形态；
+    // 入库统一为 realpath（文件刚被 append 过必存在；异常回退 resolve）
+    const canonical = (() => {
+      try { return realpathSync(file) } catch { return resolve(file) }
+    })()
     const s = this.#state
-    if (!s || s.sessionId !== sessionId || s.file !== file) {
-      this.#state = { sessionId, file: resolve(file), eventCount: seq + 1, chainHead: hash, chainTail: hash, firstTs: ts, lastTs: ts }
+    if (!s || s.sessionId !== sessionId || s.file !== canonical) {
+      this.#state = { sessionId, file: canonical, eventCount: seq + 1, chainHead: hash, chainTail: hash, firstTs: ts, lastTs: ts }
     } else {
       s.eventCount = Math.max(s.eventCount, seq + 1)
       s.chainTail = hash

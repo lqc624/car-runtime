@@ -10,7 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -226,7 +226,8 @@ test('S28: 生产调用点——car run 真进程 append → cwd sessions-index.
       assert.ok(all.length >= 1, 'run 会话入索引')
       const hit = all.find(x => String(x.sessionId).startsWith('S-'))
       assert.ok(hit, 'run 会话 id 在索引')
-      assert.equal(String(hit!.file), join(dir, `session-${hit!.sessionId}.jsonl`))
+      // realpath 比较（1.2-BUG-4）：macOS 子进程 cwd 为物理路径 /private/var…，父进程持逻辑路径 /var…
+      assert.equal(realpathSync(String(hit!.file)), realpathSync(join(dir, `session-${hit!.sessionId}.jsonl`)))
       assert.ok(Number(hit!.eventCount) >= 3, '事件计数 = run 全程 append 量（装配+对话+收口）')
     } finally {
       db.close()
