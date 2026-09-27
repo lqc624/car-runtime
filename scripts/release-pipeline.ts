@@ -127,8 +127,14 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
   if (process.env.GH_TOKEN && process.env.REMOTE_CHECK === '1') {
     try {
       const ghBin = 'D:/WorkBuddy/agent/tools/bin/gh.exe'
-      const out = execFileSync(ghBin, ['api', `repos/lqc624/car-runtime/releases/tags/v${VERSION}`, '--jq', '.assets[].name'], { encoding: 'utf-8', env: process.env })
-      const assets = out.trim().split('\n').filter(Boolean)
+      // tag 形态双兼容：v 前缀（v1.0.0 惯例）与无前缀（1.1.0 实挂形态）都查，并集去重——
+      // 硬编码单形态会把真实归档误判 FAIL（4c84b17 G-09 期望 tag 动态化同类教训，2026-09-27）
+      const fetchAssets = (tag: string): string[] => {
+        try {
+          return execFileSync(ghBin, ['api', `repos/lqc624/car-runtime/releases/tags/${tag}`, '--jq', '.assets[].name'], { encoding: 'utf-8', env: process.env }).trim().split('\n').filter(Boolean)
+        } catch { return [] }
+      }
+      const assets = [...new Set([...fetchAssets(`v${VERSION}`), ...fetchAssets(VERSION)])]
       const need = [`car-runtime-${VERSION}.tgz`, `car-runtime-${VERSION}.tgz.sig.bundle`, 'SHA256SUMS', 'sbom.json', 'release-audit.jsonl', 'car-release.pub']
       const missing = need.filter(n => !assets.includes(n))
       g10Ok = missing.length === 0
