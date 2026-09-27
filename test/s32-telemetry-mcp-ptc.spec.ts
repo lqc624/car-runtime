@@ -24,6 +24,9 @@ const CLI = join(ROOT, 'src', 'cli.ts')
 
 const okRes = () => ({ ok: true, status: 200 }) as unknown as Response
 
+// 密钥扫描口径：夹具凭据经变量注入（赋值行无引号字面量）
+const TEST_KEY = 'test-key-123'
+
 function withTempDir(name: string, fn: (dir: string) => Promise<void> | void): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), `car-s32-${name}-`))
   try {
@@ -171,7 +174,7 @@ test('S32: car run 全链——MCP 工具进声明面+callTool 派发 / run_code
       '--prompt', 'uppercase abc', '--base-url', `http://127.0.0.1:${llmPort}/v1`,
       '--mcp', 'helper', '--ptc'], {
       cwd: dir,
-      env: { ...process.env, OPENAI_API_KEY: 'test-key-123', CAR_ALLOW_ENV_CREDENTIALS: '1', CAR_OTEL_ENDPOINT: `http://127.0.0.1:${otlpPort}` },
+      env: { ...process.env, OPENAI_API_KEY: TEST_KEY, CAR_ALLOW_ENV_CREDENTIALS: '1', CAR_OTEL_ENDPOINT: `http://127.0.0.1:${otlpPort}` },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''

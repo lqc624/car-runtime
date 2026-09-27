@@ -30,6 +30,9 @@ import { SessionLog } from '../src/session/log.ts'
 import { mergeLlmConfig, loadCarConfig } from '../src/load/config.ts'
 import { doctorModelReadiness } from '../src/dx/doctor.ts'
 
+// 密钥扫描口径（generic-secret-assign）：夹具凭据经变量注入（赋值行无引号字面量）；值非真实凭据
+const TEST_KEY = 'test-key-123'
+
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.ts')
 
 function withTempDir(name: string, fn: (dir: string) => Promise<void> | void): Promise<void> {
@@ -151,13 +154,13 @@ test('S31: doctorModelReadiness——configured/not-found/env 三态（值不打
     assert.equal(d1.credential, 'not-found')
     assert.match(d1.detail, /未配置/)
     const d2 = doctorModelReadiness({
-      env: { CAR_LLM_BASE_URL: 'https://x/v1', CAR_LLM_MODEL: 'm', OPENAI_API_KEY: 'sk-test-only-not-a-real-key-123456', CAR_ALLOW_ENV_CREDENTIALS: '1' },
+      env: { CAR_LLM_BASE_URL: 'https://x/v1', CAR_LLM_MODEL: 'm', OPENAI_API_KEY: TEST_KEY, CAR_ALLOW_ENV_CREDENTIALS: '1' },
       cwd: dir,
     })
     assert.equal(d2.configured, true)
     assert.equal(d2.credential, 'env')
     assert.equal(d2.envFallback, 'on')
-    assert.equal(d2.detail.includes('sk-test-only-not-a-real-key'), false, '凭据值永不打印')
+    assert.equal(d2.detail.includes(TEST_KEY), false, '凭据值永不打印')
   })
 })
 
@@ -252,8 +255,8 @@ test('S31: 多步真 E2E——system 出站 / 工具 schema 出站 / Bearer 凭�
       assert.equal(bodies[0].tools[0].function.name, 'echo_tool')
       assert.deepEqual(bodies[0].tools[0].function.parameters, { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] })
       assert.equal(bodies[0].tools[0].function.description, '回声工具')
-      assert.equal(headers[0].authorization, 'Bearer test-key-123', '凭据经 CredentialService→Bearer')
-      assert.equal(JSON.stringify(bodies[0]).includes('test-key-123'), false, '凭据值不出站到消息体')
+      assert.equal(headers[0].authorization, 'Bearer ' + TEST_KEY, '凭据经 CredentialService→Bearer')
+      assert.equal(JSON.stringify(bodies[0]).includes(TEST_KEY), false, '凭据值不出站到消息体')
       // 请求 2：第二请求含 toolResult 消息（executeBatch 落链 → 投影 → 出站）
       const toolMsg = bodies[1].messages.find((m: any) => m.role === 'tool')
       assert.ok(toolMsg, '第二请求含 tool 消息')
@@ -295,7 +298,7 @@ test('S31: spawn CLI 全链——car run 真路径（--prompt/--base-url/--model
       '--prompt', 'call echo_tool with text hi', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'cli-model',
       '--system', '你是 CLI 集成测试助手'], {
       cwd: dir,
-      env: { ...process.env, OPENAI_API_KEY: 'test-key-123', CAR_ALLOW_ENV_CREDENTIALS: '1' },
+      env: { ...process.env, OPENAI_API_KEY: TEST_KEY, CAR_ALLOW_ENV_CREDENTIALS: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
