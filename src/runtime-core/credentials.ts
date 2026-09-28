@@ -37,6 +37,11 @@ const PROVIDER_ENV_VARS: Record<string, string[]> = {
 }
 const GENERIC_ENV_VARS = ['CAR_LLM_API_KEY']
 
+/** provider 候选 env 变量（doctor 存在性探测等诊断面复用；值永不打印） */
+export function providerEnvVars(provider: string): string[] {
+  return [...(PROVIDER_ENV_VARS[provider] ?? []), ...GENERIC_ENV_VARS]
+}
+
 /** keychain 服务名（命名空间隔离：car-runtime/<provider>） */
 export function keychainService(provider: string): string {
   return `car-runtime/${provider}`
@@ -102,7 +107,7 @@ export class CredentialService {
 
     const allowEnv = opts.allowEnvFallback === true || env.CAR_ALLOW_ENV_CREDENTIALS === '1'
     if (allowEnv) {
-      const candidates = [...(PROVIDER_ENV_VARS[provider] ?? []), ...GENERIC_ENV_VARS]
+      const candidates = providerEnvVars(provider)
       for (const name of candidates) {
         searched.push(`env:${name}`)
         if (env[name]) {

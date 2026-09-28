@@ -24,10 +24,10 @@ import { runTurn } from './loop/stop.ts'
 import { Context } from './kernel/context.ts'
 import { mountPlugin } from './load/loader.ts'
 import { verifyPluginFile } from './load/sigGate.ts'
-import { loadCarConfig, mergeSignatureGate, mergeLlmConfig } from './load/config.ts'
+import { loadCarConfig, mergeSignatureGate, mergeLlmConfig, warmCarConfig } from './load/config.ts'
 import { generateSigningKeypair, signPluginFile, resolveTrustRoot } from './load/sign.ts'
 import { doctorCredentials, doctorConnectivity, doctorKeychain, doctorSignature, doctorModelReadiness } from './dx/doctor.ts'
-import { RuntimeCore, createOpenAICompatAdapter } from './runtime-core/llm.ts'
+import { RuntimeCore, createOpenAICompatAdapter, createAnthropicAdapter } from './runtime-core/llm.ts'
 import { CredentialService } from './runtime-core/credentials.ts'
 import { chatStep } from './runtime-core/chatStep.ts'
 import { toToolDefinitions } from './runtime-core/tools.ts'
@@ -36,8 +36,11 @@ import { TurnTracer } from './runtime-core/trace.ts'
 import type { CounterName, AllowedLabels } from './telemetry/metrics.ts'
 
 const HELP = `用法: car <command> [args]
-  run <plugin.ts> [--sig-enforce] [--config <path>]
+  run <plugin.ts> [--sig-enforce] [--config <path>] [--adapter-id <id>]
                                     装配并运行插件（快速上手流；装载前签名门 warn 缺省）
+                                    真路径：--prompt <text> + --base-url/--model（或 llm.* 配置）；
+                                    --adapter-id anthropic = Messages API（凭据 ANTHROPIC_API_KEY）；
+                                    --demo = stub 演示流
   reload <file|dir> [--sig-enforce] [--config <path>]
                                     热重载插件并打印六阶段加载报告（含 verify 签名门）
   session verify <file>            哈希链完整性校验（撕裂尾显式报告）
@@ -49,6 +52,8 @@ const HELP = `用法: car <command> [args]
   session verify/replay/export 均支持 --session <id> [--db <path>]
                                     经 SQLite 索引定位会话（1.2；缺省 db = cwd sessions-index.db；索引未收录 = 显式报错）
   doctor                环境自检
+  mcp-serve [--host <id>] [--plugin <file|dir>...] [--config <path>]
+                                    CAR-as-MCP-Server（宿主经 stdio JSON-RPC 接入）
   plugin-sign keygen [--out <前缀>] [--force]
                                     生成 ed25519 签名密钥对（<前缀>.priv PKCS8 DER / <前缀>.pub SPKI base64；缺省前缀 car-release）
   plugin-sign sign <file...> [--key <priv>]
@@ -57,8 +62,10 @@ const HELP = `用法: car <command> [args]
                                     验证签名（信任根序：--trust-root > CAR_TRUST_ROOT > ./car-release.pub；缺签/坏签均 FAIL）
 签名门环境变量：CAR_SIG_ENFORCE=1 切 enforce；CAR_TRUST_ROOT=<ed25519 spki base64>；
 CAR_UNSIGNED_ALLOW=1 显式声明豁免（warn 缺签路径计数 confirmed=yes，横幅保留）
-配置文件通道（1.1）：cwd car.config.json 或 --config <path>；键位 sandbox.unsigned.allow /
-sandbox.sig.enforce / sandbox.sig.trustRoot；优先级 flag > env > 配置 > 缺省；未知键 fail-visible`
+配置文件通道（1.5 起双载体）：cwd car.config.ts（export default {…}；发现序 ts > json）或
+car.config.json 或 --config <path>；键位 sandbox.unsigned.allow / sandbox.sig.enforce /
+sandbox.sig.trustRoot / llm.* / mcp.servers.*（stdio: command/args/env；远程: url/headers，
+\${ENV_VAR} 引用注入凭据）；优先级 flag > env > 配置 > 缺省；未知键 fail-visible`
 
 // 进程内热重载会话（ReloadManager 持有 epoch 与实例注册表；同进程连续 reload 语义完整）
 let reloadMgrPromise: Promise<import('./load/report.ts').ReloadManager> | undefined
@@ -101,6 +108,8 @@ function resolveSigGate(argv: string[]): { options: import('./load/sigGate.ts').
 
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv
+  // 1.5-S3（D-22）：car.config.ts 载体统一预热（--config *.ts 或 cwd 发现序 ts>json；无 TS 载体 = no-op）
+  await warmCarConfig({ explicitPath: flagValue(rest, '--config') })
   switch (cmd) {
     case 'run': {
       // 1.4-S5（D-13）：缺省 = 真实模型路径（chatStep 经 openai-compat 适配器）；--demo 保留 stub 演示流。
@@ -186,8 +195,9 @@ async function main(): Promise<number> {
         const prompt = flagValue(rest, '--prompt')
         if (!llm.baseUrl || !llm.model || prompt === undefined) {
           console.error('CAR-E-LLM-CONFIG: 真实模型路径需要 baseUrl + model + --prompt——')
-          console.error('  配置：car.config.json {"llm":{"baseUrl":"https://…","model":"…"}} / env CAR_LLM_BASE_URL+CAR_LLM_MODEL / flag --base-url --model --prompt')
-          console.error('  凭据：OPENAI_API_KEY（env fallback 需 CAR_ALLOW_ENV_CREDENTIALS=1 或 llm.allowEnvFallback）或 keychain；诊断：car doctor')
+          console.error('  配置：car.config.ts（export default）或 car.config.json {"llm":{"baseUrl":"https://…","model":"…"}} / env CAR_LLM_BASE_URL+CAR_LLM_MODEL / flag --base-url --model --prompt')
+          console.error('  anthropic：llm.adapterId "anthropic"（或 --adapter-id anthropic）+ baseUrl https://api.anthropic.com；凭据 ANTHROPIC_API_KEY')
+          console.error('  凭据：OPENAI_API_KEY / ANTHROPIC_API_KEY（env fallback 需 CAR_ALLOW_ENV_CREDENTIALS=1 或 llm.allowEnvFallback）或 keychain；诊断：car doctor')
           console.error('  （无模型演示流：--demo）')
           return 2
         }
@@ -195,12 +205,15 @@ async function main(): Promise<number> {
         const credService = new CredentialService()
         const core = new RuntimeCore(credService)
         core.bindContext(ctx)
-        // 适配器经根作用域 effect 可逆注册（bindContext 必须先于 register——否则走非可逆直注册分支）
-        core.registerLlmAdapter(createOpenAICompatAdapter({
-          baseUrl: llm.baseUrl,
-          credentials: credService,
-          provider: 'openai-compat',
-        }), { default: true })
+        // 适配器经根作用域 effect 可逆注册（bindContext 必须先于 register——否则走非可逆直注册分支）；
+        // 1.5-S1（D-20）：adapterId='anthropic' → anthropic 适配器（Messages API）；缺省 openai-compat 不变
+        core.registerLlmAdapter(llm.adapterId === 'anthropic'
+          ? createAnthropicAdapter({ baseUrl: llm.baseUrl, credentials: credService, provider: 'anthropic' })
+          : createOpenAICompatAdapter({
+              baseUrl: llm.baseUrl,
+              credentials: credService,
+              provider: 'openai-compat',
+            }), { default: true })
         // MCP 工具进 turn（D-18）：--mcp <serverId>（可重复；server 启动规格在 car.config.json mcp.servers 登记）
         const mcpIds: string[] = []
         for (let i = 0; i < rest.length; i++) {
@@ -214,11 +227,15 @@ async function main(): Promise<number> {
         if (mcpIds.length) {
           const { McpGateway } = await import('./mcp/gateway.ts')
           const { createStdioClientTransport } = await import('./mcp/stdioClient.ts')
+          const { createHttpMcpTransport, resolveMcpHeaders } = await import('./mcp/httpClient.ts')
           const gw = new McpGateway()
           for (const id of mcpIds) {
             const spec = cfgLlm.config.mcp?.servers?.[id]
-            if (!spec) { console.error(`CAR-E-MCP: server "${id}" 未在 car.config.json mcp.servers 登记`); return 2 }
-            const transport = createStdioClientTransport({ command: spec.command, args: spec.args })
+            if (!spec) { console.error(`CAR-E-MCP: server "${id}" 未在配置 mcp.servers 登记`); return 2 }
+            // 1.5-S2（D-21）：url = 远程 Streamable HTTP（懒 initialize + 会话头）；command = stdio 本地进程
+            const transport = spec.url
+              ? createHttpMcpTransport({ url: spec.url, headers: resolveMcpHeaders(spec.headers ?? {}) })
+              : createStdioClientTransport({ command: spec.command!, args: spec.args })
             mcpTransports.push(transport)
             const mcpTools = await gw.register({ serverId: id, transport, env: spec.env })
             for (const t of mcpTools) {

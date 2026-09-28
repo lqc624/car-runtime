@@ -48,11 +48,17 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
     throw new Error(`CAR-E-N1: 模型请求前快照与日志投影失配 @ atSeq=${asserted.failedAt}（Model-visible means logged 违规）`)
   }
 
-  // 2. 请求消息 = 投影（角色系统：user/assistant/toolResult 与 LlmRequest 对齐；
-  //    assistant 工具调用以 { toolCall } content 形态原样透传——deriveMessages 投影即模型可见流）
+  // 2. 请求消息 = 投影（角色系统：user/assistant/toolResult 与 LlmRequest 对齐）；
+  //    toolCall 事件投影形态为 { role:'assistant', toolCall }（log.ts 口径）——此处归一化为
+  //    content {toolCall} 载荷（适配器历史回路映射的唯一消费源）。
+  //    1.5-BUG-1：此前仅透传 m.content，toolCall 属性被丢弃——工具调用历史在后续请求
+  //    静默消失（真实 provider 对无 tool_calls 前驱的 tool 消息直接 400）；anthropic E2E
+  //    生产调用点核查（1.5-GO-5）暴露，openai-compat 同样受益。
   const messages = log.deriveMessages().map(m => ({
     role: m.role as 'system' | 'user' | 'assistant' | 'toolResult',
-    content: m.content,
+    content: (m as unknown as { toolCall?: unknown }).toolCall !== undefined
+      ? { toolCall: (m as unknown as { toolCall: unknown }).toolCall }
+      : m.content,
   }))
 
   // 4. 流式消费（3. 凭据解析在适配器首块前，A080001 由此传播）

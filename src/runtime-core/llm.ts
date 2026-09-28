@@ -9,8 +9,12 @@
  *  - 重试基线（§3.5.4）：仅网络错误/429/5xx、≤2 次、指数退避 1s/2s；**首块前失败才可重试**
  *    （已消费的 chunk 不可重放——重试不产生额外副作用）；重试耗尽 = CarM8Error B080001
  *    （BD-04 error 收口由消费方 runTurn 落 turnEnd）；流中途失败 = finishReason 'error' chunk；
- *  - 超时基线：总 120s / 首字节 30s（均可注入缩短供测试）；TLS 强制（https-only）；
- *  - declaredSideEffect 不出站（权限面只进权限门，不进模型请求体）。
+ *  - 超时基线：总 120s / 首字节 30s（均可注入缩短供测试）；TLS 强制（https-only，D-12a
+ *    loopback 豁免共用 assertTlsOrLoopback）；重试/超时/取消引擎单点共用（1.5-S1 streamSsePost
+ *    ——openai-compat / anthropic 语义不漂移，parse 为唯一 provider 差异点）；
+ *  - declaredSideEffect 不出站（权限面只进权限门，不进模型请求体）；
+ *  - 1.5-S1（D-20）：内置 anthropic 适配器（Messages API 流式；max_tokens 必填缺省 4096；
+ *    system 顶层化；凭据 provider='anthropic'）。
  */
 import { CarM8Error, providerUnreachable } from './errors.ts'
 import { CredentialService } from './credentials.ts'
@@ -107,6 +111,101 @@ export class RuntimeCore {
   }
 }
 
+// ==================== 适配器共用基线（1.5-S1 抽取：D-12a TLS 门 + §3.5.4 流式引擎） ====================
+
+/**
+ * D-12a TLS 强制门（openai-compat / anthropic 共用，口径不变）：https 直接通过；
+ * http 仅豁免 loopback——本地模型服务（Ollama 等）与本地 E2E；非回环地址维持 TLS 强制
+ * （§3.2.M8.4）。豁免集显式列举，不扩大到局域网。
+ */
+export function assertTlsOrLoopback(baseUrl: string): void {
+  if (baseUrl.startsWith('https://')) return
+  let loopback = false
+  try { const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, ''); loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1' } catch { /* 解析失败 = 非法 URL，按非回环拒绝 */ }
+  if (!loopback) {
+    throw new Error(`CAR-E-LLM-TLS: baseUrl 必须 https（TLS 强制，§3.2.M8.4）；http 仅豁免 loopback（127.0.0.1/[::1]/localhost，D-12a）——远程明文部署请经 TLS 代理或自建适配器`)
+  }
+}
+
+/** 流式 POST 请求规格（凭据解析在 buildRequest 内——A080001 首块前抛出，runTurn 可 error 收口） */
+interface SsePostSpec {
+  url: string
+  buildRequest: () => Promise<{ method: 'POST'; headers: Record<string, string>; body: string }>
+  fetchImpl: typeof fetch
+  signal?: { aborted: boolean }
+  timeoutMs: number
+  firstByteMs: number
+  retries: number
+  backoffMs: number[]
+  sleep: (ms: number) => Promise<void>
+}
+
+/**
+ * §3.5.4 流式 POST 引擎（openai-compat / anthropic 单点共用，1.5-S1 抽取——两适配器重试/
+ * 超时/取消语义不漂移）：仅网络错误/429/5xx、≤2 次、指数退避 1s/2s；首块前失败才可重试
+ * （已消费 chunk 不可重放）；重试耗尽 = CarM8Error B080001；外部取消 ≠ 失败（D-19：静默
+ * 收口不 retry 不 error chunk）；流自然结束未携带 finishReason = AL-05 显式 error chunk。
+ * `parse` 为唯一 provider 差异点（SSE 字节流 → LlmChunk）。
+ */
+async function* streamSsePost(spec: SsePostSpec, parse: (body: AsyncIterable<Uint8Array>) => AsyncIterable<LlmChunk>): AsyncIterable<LlmChunk> {
+  const payload = await spec.buildRequest()
+  for (let attempt = 0; ; attempt++) {
+    // D-19：外部取消 ≠ 失败——attempt 前检查，静默收口（无 chunk、无 retry）
+    if (spec.signal?.aborted) return
+    const controller = new AbortController()
+    const started = Date.now()
+    let firstByteSeen = false
+    const firstByteTimer = setTimeout(() => controller.abort(), spec.firstByteMs)
+    const overallTimer = setTimeout(() => controller.abort(), spec.timeoutMs)
+    try {
+      const res = await spec.fetchImpl(spec.url, { ...payload, signal: controller.signal })
+      if (res.status === 429 || res.status >= 500) throw new Retryable(`HTTP ${res.status}`)
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        // 4xx 业务错不重试（§3.5.4）；错误信息不含凭据（凭据值不进错误路径）
+        yield { finishReason: 'error', error: { code: 'B080001', message: `provider HTTP ${res.status}${text ? `：${text.slice(0, 200)}` : ''}` } }
+        return
+      }
+      if (!res.body) throw new Retryable('响应无 body 流')
+      let sawFinish = false
+      for await (const chunk of parse(res.body)) {
+        // D-19：chunk 间隙检查取消——abort 连接并静默收口（不产 error chunk，不违反
+        // finishReason 不可变；上层 chatStep 以自身 signal 检查抛 TurnAborted）
+        if (spec.signal?.aborted) { controller.abort(); return }
+        if (!firstByteSeen) { firstByteSeen = true; clearTimeout(firstByteTimer) }
+        if (chunk.finishReason !== undefined) sawFinish = true
+        yield chunk
+      }
+      // 流自然结束但未给 finishReason = 异常终止（AL-05 口径：缺失显式化，禁吞没）；
+      // 已携带 finishReason 的流原样收口——兜底不得追加（M8-BUG-1 口径延续）
+      if (!sawFinish) {
+        yield { finishReason: 'error', error: { code: 'B080001', message: '流结束未携带 finish_reason（AL-05）' } }
+      }
+      return
+    } catch (e) {
+      // D-19：外部取消（abort 连锁的 fetch 异常）≠ 失败——静默收口，不走 retry
+      if (spec.signal?.aborted) return
+      const beforeFirstByte = !firstByteSeen
+      clearTimeout(firstByteTimer)
+      // 首块前失败 = 网络错误/429/5xx/首字节超时（§3.5.4 重试条件全集）——未消费任何 chunk
+      if (beforeFirstByte && attempt < spec.retries) {
+        await spec.sleep(spec.backoffMs[Math.min(attempt, spec.backoffMs.length - 1)]!)
+        continue
+      }
+      if (beforeFirstByte) {
+        // 重试耗尽 → B080001（BD-04：消费方 runTurn 以 error 收口）
+        throw providerUnreachable(`${(e as Error).name}: ${(e as Error).message}（尝试 ${attempt + 1}/${spec.retries + 1}，${Date.now() - started}ms）`)
+      }
+      // 流中途失败：已消费 chunk 不可重放 → error chunk 收口
+      yield { finishReason: 'error', error: { code: 'B080001', message: `流中途失败：${(e as Error).message}` } }
+      return
+    } finally {
+      clearTimeout(firstByteTimer)
+      clearTimeout(overallTimer)
+    }
+  }
+}
+
 // ==================== 内置 openai-compat 适配器（流式 SSE） ====================
 
 export interface OpenAICompatOptions {
@@ -198,15 +297,8 @@ async function* parseSseStream(body: AsyncIterable<Uint8Array>): AsyncIterable<L
 export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter & { id: string } {
   const id = opts.id ?? 'openai-compat'
   const baseUrl = opts.baseUrl.replace(/\/+$/, '')
-  if (!baseUrl.startsWith('https://')) {
-    // 1.4-S4（D-12a，1.2 规划期裁决）：http 仅豁免 loopback——本地模型服务（Ollama 等）与
-    // 本地 E2E；非回环地址维持 TLS 强制（§3.2.M8.4）。豁免集显式列举，不扩大到局域网。
-    let loopback = false
-    try { const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, ''); loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1' } catch { /* 解析失败 = 非法 URL，按非回环拒绝 */ }
-    if (!loopback) {
-      throw new Error(`CAR-E-LLM-TLS: baseUrl 必须 https（TLS 强制，§3.2.M8.4）；http 仅豁免 loopback（127.0.0.1/[::1]/localhost，D-12a）——远程明文部署请经 TLS 代理或自建适配器`)
-    }
-  }
+  // 1.4-S4（D-12a，1.2 规划期裁决）：TLS 门 1.5-S1 抽取共用（口径与报错文案不变）
+  assertTlsOrLoopback(baseUrl)
   const url = `${baseUrl}/chat/completions`
   const fetchImpl = opts.fetchImpl ?? fetch
   const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
@@ -218,7 +310,7 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
   const toOpenAI = (req: LlmRequest, apiKey: string) => ({
     // 1.4-BUG-1：method: 'POST' 缺失——M8 最小实现潜伏缺陷（注入式 fetch 的单测忽略 method，
     // 真 undici 对 GET+body 直接拒绝）；car run 真路径接线时暴露（生产调用点核查产出）
-    method: 'POST',
+    method: 'POST' as const,
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${apiKey}`,
@@ -249,72 +341,194 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
 
   return {
     id,
-    async *chat(req: LlmRequest): AsyncIterable<LlmChunk> {
-      // 凭据门：resolve → reveal（SQ-07 凭据解析；A080001 在此抛出——首块前，runTurn 可 error 收口）
-      let apiKey = ''
-      if (opts.credentials) {
-        const ref = opts.credentials.resolve(opts.provider ?? id, {})
-        apiKey = opts.credentials.reveal(ref, {})
-      }
-      const payload = toOpenAI(req, apiKey)
+    chat(req: LlmRequest): AsyncIterable<LlmChunk> {
+      return streamSsePost({
+        url,
+        // 凭据门：resolve → reveal（SQ-07 凭据解析；A080001 在此抛出——首块前，runTurn 可 error 收口）
+        buildRequest: async () => {
+          let apiKey = ''
+          if (opts.credentials) {
+            const ref = opts.credentials.resolve(opts.provider ?? id, {})
+            apiKey = opts.credentials.reveal(ref, {})
+          }
+          return toOpenAI(req, apiKey)
+        },
+        fetchImpl,
+        signal: req.signal,
+        timeoutMs, firstByteMs, retries, backoffMs, sleep,
+      }, parseSseStream)
+    },
+  }
+}
 
-      for (let attempt = 0; ; attempt++) {
-        // 1.4-S4（D-19）：外部取消 ≠ 失败——attempt 前检查，静默收口（无 chunk、无 retry）
-        if (req.signal?.aborted) return
-        const controller = new AbortController()
-        const started = Date.now()
-        let firstByteSeen = false
-        const firstByteTimer = setTimeout(() => controller.abort(), firstByteMs)
-        const overallTimer = setTimeout(() => controller.abort(), timeoutMs)
-        try {
-          const res = await fetchImpl(url, { ...payload, signal: controller.signal })
-          if (res.status === 429 || res.status >= 500) throw new Retryable(`HTTP ${res.status}`)
-          if (!res.ok) {
-            const text = await res.text().catch(() => '')
-            // 4xx 业务错不重试（§3.5.4）；错误信息不含凭据（Bearer 值不进错误路径）
-            yield { finishReason: 'error', error: { code: 'B080001', message: `provider HTTP ${res.status}${text ? `：${text.slice(0, 200)}` : ''}` } }
-            return
-          }
-          if (!res.body) throw new Retryable('响应无 body 流')
-          let sawFinish = false
-          for await (const chunk of parseSseStream(res.body)) {
-            // 1.4-S4（D-19）：chunk 间隙检查取消——abort 连接并静默收口（不产 error chunk，
-            // 不违反 finishReason 不可变；上层 chatStep 以自身 signal 检查抛 TurnAborted）
-            if (req.signal?.aborted) { controller.abort(); return }
-            if (!firstByteSeen) { firstByteSeen = true; clearTimeout(firstByteTimer) }
-            if (chunk.finishReason !== undefined) sawFinish = true
-            yield chunk
-          }
-          // 流自然结束但未给 finishReason = 异常终止（AL-05 口径：缺失显式化，禁吞没）；
-          // 已携带 finishReason 的流原样收口——兜底不得追加（M8-BUG-1：无条件 error chunk
-          // 会污染成功流并触发 finishReason 守卫冲突；成功流零 error chunk 由 s25 断言钉死）
-          if (!sawFinish) {
-            yield { finishReason: 'error', error: { code: 'B080001', message: '流结束未携带 finish_reason（AL-05）' } }
-          }
-          return
-        } catch (e) {
-          // 1.4-S4（D-19）：外部取消（abort 连锁的 fetch 异常）≠ 失败——静默收口，不走 retry
-          if (req.signal?.aborted) return
-          const beforeFirstByte = !firstByteSeen
-          clearTimeout(firstByteTimer)
-          // 首块前失败 = 网络错误/429/5xx/首字节超时（§3.5.4 重试条件全集）——未消费任何
-          // chunk，请求体可重放，重试不产生额外副作用；流中途失败不可重放（chunk 已消费）
-          if (beforeFirstByte && attempt < retries) {
-            await sleep(backoffMs[Math.min(attempt, backoffMs.length - 1)]!)
-            continue
-          }
-          if (beforeFirstByte) {
-            // 重试耗尽 → B080001（BD-04：消费方 runTurn 以 error 收口）
-            throw providerUnreachable(`${(e as Error).name}: ${(e as Error).message}（尝试 ${attempt + 1}/${retries + 1}，${Date.now() - started}ms）`)
-          }
-          // 流中途失败：已消费 chunk 不可重放 → error chunk 收口
-          yield { finishReason: 'error', error: { code: 'B080001', message: `流中途失败：${(e as Error).message}` } }
-          return
-        } finally {
-          clearTimeout(firstByteTimer)
-          clearTimeout(overallTimer)
+// ==================== 内置 anthropic 适配器（Messages API 流式 SSE，1.5-S1 / D-20） ====================
+
+export interface AnthropicAdapterOptions {
+  id?: string
+  /** API 源（如 https://api.anthropic.com；请求路径 = {baseUrl}/v1/messages，与官方 SDK base_url 同约定） */
+  baseUrl: string
+  /** 凭据服务与 provider 名（x-api-key 来源；provider 缺省 'anthropic' → ANTHROPIC_API_KEY） */
+  credentials?: CredentialService
+  provider?: string
+  fetchImpl?: typeof fetch
+  /** §3.5.4 基线：总 120s / 首字节 30s / 2 次退避 1s-2s（与 openai-compat 同款） */
+  timeoutMs?: number
+  firstByteMs?: number
+  retries?: number
+  backoffMs?: number[]
+  sleep?: (ms: number) => Promise<void>
+  /** D-20：Anthropic API max_tokens 必填——req.maxTokens 缺席时取此缺省（provider 差异登记，缺省 4096） */
+  defaultMaxTokens?: number
+}
+
+/** stop_reason → CAR finishReason（未映射 fail-visible——openai FINISH_MAP 同纪律） */
+const ANTHROPIC_STOP_REASON_MAP: Record<string, LlmChunk['finishReason']> = {
+  end_turn: 'stop',
+  stop_sequence: 'stop',
+  max_tokens: 'length',
+  tool_use: 'toolUse',
+  refusal: 'aborted',
+}
+
+/**
+ * Anthropic Messages API 请求体（D-20）：system 消息提升为顶层 `system`（多条 \n\n 连接）；
+ * toolResult 收敛进 user 消息 content（连续多条合并为单 user 多 tool_result 块——Anthropic
+ * 消息序列约束）；assistant 工具调用 = content:[{type:'tool_use',id,name,input}]；
+ * declaredSideEffect 不出站（与 openai-compat 同红线）。
+ */
+function toAnthropic(req: LlmRequest, apiKey: string) {
+  const system: string[] = []
+  const turns: Array<{ role: 'user' | 'assistant'; content: unknown }> = []
+  let pendingToolResults: Array<Record<string, unknown>> = []
+  const flushToolResults = () => {
+    if (!pendingToolResults.length) return
+    turns.push({ role: 'user', content: pendingToolResults })
+    pendingToolResults = []
+  }
+  for (const m of req.messages) {
+    if (m.role === 'system') {
+      system.push(typeof m.content === 'string' ? m.content : JSON.stringify(m.content))
+      continue
+    }
+    if (m.role === 'toolResult') {
+      const p = m.content as { id?: string; result?: unknown; error?: string }
+      pendingToolResults.push({
+        type: 'tool_result',
+        tool_use_id: p?.id ?? '',
+        content: p?.error ?? JSON.stringify(p?.result ?? null),
+        ...(p?.error ? { is_error: true } : {}),
+      })
+      continue
+    }
+    flushToolResults()
+    if (m.role === 'assistant' && m.content != null && typeof m.content === 'object' && 'toolCall' in (m.content as object)) {
+      const tc = (m.content as { toolCall: { id: string; tool: string; args: unknown } }).toolCall
+      turns.push({ role: 'assistant', content: [{ type: 'tool_use', id: tc.id, name: tc.tool, input: tc.args ?? {} }] })
+    } else {
+      turns.push({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })
+    }
+  }
+  flushToolResults()
+  return {
+    method: 'POST' as const,
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: req.model,
+      stream: true,
+      max_tokens: req.maxTokens ?? 4096,
+      ...(system.length ? { system: system.join('\n\n') } : {}),
+      messages: turns,
+      ...(req.tools.length
+        ? { tools: req.tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })) }
+        : {}),
+    }),
+  }
+}
+
+/**
+ * Anthropic SSE → LlmChunk 流解析（data-only：data JSON 自带 `type` 字段，`event:` 行不依赖）。
+ * content_block_start(tool_use) → toolCallDelta{id,name}；input_json_delta → toolCallDelta{argumentsDelta}；
+ * message_delta.stop_reason → finishReason（终态信号，单次）；ping/message_stop/未知事件容错跳过。
+ */
+async function* parseAnthropicSseStream(body: AsyncIterable<Uint8Array>): AsyncIterable<LlmChunk> {
+  const decoder = new TextDecoder()
+  let buf = ''
+  for await (const bytes of body) {
+    buf += decoder.decode(bytes, { stream: true })
+    let nl: number
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).replace(/\r$/, '')
+      buf = buf.slice(nl + 1)
+      if (!line.startsWith('data:')) continue
+      const data = line.slice(5).trim()
+      if (!data) continue
+      let evt: any
+      try { evt = JSON.parse(data) } catch { continue } // 心跳/注释行容错跳过
+      const type = evt?.type
+      if (type === 'content_block_start') {
+        const block = evt.content_block
+        if (block?.type === 'tool_use') {
+          yield { toolCallDelta: { index: evt.index, id: block.id, name: block.name } }
         }
+      } else if (type === 'content_block_delta') {
+        const d = evt.delta
+        if (d?.type === 'text_delta' && typeof d.text === 'string' && d.text.length) {
+          yield { delta: d.text }
+        } else if (d?.type === 'input_json_delta' && typeof d.partial_json === 'string' && d.partial_json.length) {
+          yield { toolCallDelta: { index: evt.index, argumentsDelta: d.partial_json } }
+        }
+        // thinking_delta / citations_delta 等非 CAR 消费面：容错跳过
+      } else if (type === 'message_delta') {
+        const raw = evt.delta?.stop_reason
+        if (raw != null) {
+          const finish = ANTHROPIC_STOP_REASON_MAP[String(raw)]
+          yield finish
+            ? { finishReason: finish }
+            : { finishReason: 'error', error: { code: 'B080001', message: `未映射的 stop_reason "${raw}"` } }
+        }
+      } else if (type === 'error') {
+        // 流内 error 事件（overloaded_error 等）→ error chunk 收口（后续 message_delta 由守卫拦冲突）
+        yield { finishReason: 'error', error: { code: 'B080001', message: `provider 流错误：${evt.error?.message ?? JSON.stringify(evt).slice(0, 200)}` } }
       }
+    }
+  }
+}
+
+export function createAnthropicAdapter(opts: AnthropicAdapterOptions): LlmAdapter & { id: string } {
+  const id = opts.id ?? 'anthropic'
+  const baseUrl = opts.baseUrl.replace(/\/+$/, '')
+  assertTlsOrLoopback(baseUrl)
+  const url = `${baseUrl}/v1/messages`
+  const fetchImpl = opts.fetchImpl ?? fetch
+  const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
+  const timeoutMs = opts.timeoutMs ?? 120_000
+  const firstByteMs = opts.firstByteMs ?? 30_000
+  const retries = opts.retries ?? 2
+  const backoffMs = opts.backoffMs ?? [1_000, 2_000]
+
+  return {
+    id,
+    chat(req: LlmRequest): AsyncIterable<LlmChunk> {
+      return streamSsePost({
+        url,
+        // 凭据门：resolve → reveal（provider='anthropic' → keychain car-runtime/anthropic →
+        // env ANTHROPIC_API_KEY——credentials.ts 1.4 既有登记；A080001 首块前抛出）
+        buildRequest: async () => {
+          let apiKey = ''
+          if (opts.credentials) {
+            const ref = opts.credentials.resolve(opts.provider ?? id, {})
+            apiKey = opts.credentials.reveal(ref, {})
+          }
+          return toAnthropic(req, apiKey)
+        },
+        fetchImpl,
+        signal: req.signal,
+        timeoutMs, firstByteMs, retries, backoffMs, sleep,
+      }, parseAnthropicSseStream)
     },
   }
 }
