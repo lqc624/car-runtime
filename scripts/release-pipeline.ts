@@ -79,13 +79,13 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
     if (process.env.REMOTE_CHECK === '1') {
       try {
         execSync('npm audit --omit=dev --audit-level=high', { cwd: ROOT, stdio: 'pipe' })
-        auditDetail = `运行时依赖 ${depCount} 项（D-22：zod ^3）；npm audit --omit=dev --audit-level=high 0 findings`
+        auditDetail = `运行时依赖 ${depCount} 项（D-22/D-24：zod ^3 + jiti ^2）；npm audit --omit=dev --audit-level=high 0 findings`
       } catch {
         auditOk = false
         auditDetail = `运行时依赖 ${depCount} 项；npm audit --audit-level=high 有 findings（阻塞——G-04 D-22 口径）`
       }
     } else {
-      auditDetail = `运行时依赖 ${depCount} 项（D-22：zod ^3）；npm audit 在 REMOTE_CHECK=1 实跑（DRY-RUN）`
+      auditDetail = `运行时依赖 ${depCount} 项（D-22/D-24：zod ^3 + jiti ^2）；npm audit 在 REMOTE_CHECK=1 实跑（DRY-RUN）`
     }
   }
   record(stage, 'G-04 依赖审计', auditOk, auditDetail)
