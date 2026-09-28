@@ -69,9 +69,26 @@ const record = (stage: string, gate: string, ok: boolean, detail = '', dryRun = 
     for (const p of secretPatterns) if (p.test(content)) hits++
   }
   record(stage, 'G-03 硬编码密钥扫描 = 0', hits === 0, `${hits} hits（扫描 ${scanned} 个 .ts，豁免：secrets.ts 规则库 + s7 标定基准，豁免清单见脚本注记）`)
-  // 依赖审计：零运行时依赖 → 无漏洞面（pnpm audit 在引入依赖后启用）
+  // 依赖审计：1.5-S3（D-22）zod 为首个常规运行时依赖 → 门禁口径从「零依赖断言」切换为
+  // npm audit（omit=dev，high 阻塞）——与 ci.yml j01 依赖审计同款；audit 不可达（离线）= DRY-RUN
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'))
-  record(stage, 'G-04 依赖审计', Object.keys(pkg.dependencies ?? {}).length === 0, '零运行时依赖（node:sqlite/node:crypto 内置），pnpm audit 在引入首依赖后启用')
+  const depCount = Object.keys(pkg.dependencies ?? {}).length
+  let auditOk = true
+  let auditDetail = '无运行时依赖（audit 免除）'
+  if (depCount > 0) {
+    if (process.env.REMOTE_CHECK === '1') {
+      try {
+        execSync('npm audit --omit=dev --audit-level=high', { cwd: ROOT, stdio: 'pipe' })
+        auditDetail = `运行时依赖 ${depCount} 项（D-22：zod ^3）；npm audit --omit=dev --audit-level=high 0 findings`
+      } catch {
+        auditOk = false
+        auditDetail = `运行时依赖 ${depCount} 项；npm audit --audit-level=high 有 findings（阻塞——G-04 D-22 口径）`
+      }
+    } else {
+      auditDetail = `运行时依赖 ${depCount} 项（D-22：zod ^3）；npm audit 在 REMOTE_CHECK=1 实跑（DRY-RUN）`
+    }
+  }
+  record(stage, 'G-04 依赖审计', auditOk, auditDetail)
 }
 
 // ── 阶段 2：构建与制品 ──
