@@ -29,7 +29,8 @@ export interface RuntimeFacade {
   sessionExport(args: { sessionId: string }): Promise<{ bundle: unknown }>
   /** M5-DEC4 转正：跨宿主 fork（宿主 A 侧调用，产出可迁移工件 + 宿主 B 侧确定性会话 id） */
   sessionFork(args: { sessionId: string; targetHostId: string; targetHostSessionId: string; upToSeq?: number }): Promise<{ sessionId: string; jsonl: string; migrated: number }>
-  toolList(args: Record<string, never>): Promise<{ tools: string[] }>
+  /** 1.6-S2（D-25）：声明面出站（name/description/parameters——declaredSideEffect 权限面不出站）；未装配 = 空面 */
+  toolList(args: Record<string, never>): Promise<{ tools: Array<{ name: string; description?: string; parameters?: unknown }> }>
   toolCall(args: { sessionId: string; tool: string; arguments?: Record<string, unknown> }): Promise<{ ok: boolean; result?: unknown; error?: string }>
 }
 

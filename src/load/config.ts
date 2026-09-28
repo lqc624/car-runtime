@@ -1,10 +1,13 @@
 /**
- * 1.1-S3 签名配置文件通道 → 1.5-S3 完整形态（car.config.ts + zod，D-22）
+ * 1.1-S3 签名配置文件通道 → 1.5-S3 完整形态（car.config.ts + zod，D-22）→ 1.6-S3 jiti 载体（D-24）
  *
  * 口径：
- *  - 载体（D-22）：发现序 **car.config.ts > car.config.json**（同目录两者并存 = ts 胜出，
+ *  - 载体（D-22 + D-24 修订）：发现序 **car.config.ts > car.config.json**（同目录两者并存 = ts 胜出，
  *    json 忽略——禁静默合并）；显式 --config 按扩展名分派（.ts 走 TS 载体，其余 JSON 解析）；
- *    TS 载体 = 动态 import()（Node 原生类型剥离，插件加载同纪律——jiti 继续登记不引入）；
+ *    TS 载体 = **jiti 自包含转译**（1.6-S3——零传递依赖 bundled 形态，第二个常规运行时依赖；
+ *    D-22「jiti 继续登记不引入」到期出清）：Node 22.19+ 加载 car.config.ts 不再依赖
+ *    --experimental-transform-types，非可擦除语法（enum 等 transform-only 形态）可用——
+ *    erasable-only 预检登记项随之出清（被取代）；插件加载的原生类型剥离纪律不动。
  *    形态 = `export default {…}`（非对象/缺 default 显式报错）。
  *  - **预热协议**：loadCarConfig 保持同步签名（doctor/resolveSigGate 等既有调用面不动）；
  *    car.config.ts 须先经 warmCarConfig 异步预热入缓存（CLI 入口统一预热），未预热显式报错
@@ -20,7 +23,6 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { z } from 'zod'
 import type { SignatureGateOptions } from './sigGate.ts'
 
@@ -184,9 +186,10 @@ const tsCache = new Map<string, ConfigLoadResult>()
 let tsEpoch = 0
 
 /**
- * 1.5-S3（D-22）：car.config.ts 载体预热（动态 import 与插件加载同纪律——Node 原生类型剥离，
- * Node 22 须 --experimental-transform-types / Node ≥23.6 原生支持；报错文案引导）。
- * CLI 入口统一预热；直接调用 loadCarConfig 的库方在存在 car.config.ts 时须先 await 本函数。
+ * 1.5-S3（D-22）→ 1.6-S3（D-24）：car.config.ts 载体预热。
+ * jiti 自包含转译（每 epoch 新实例 + moduleCache 关 = 击穿语义与 1.5 等价）——
+ * Node 22.19+ 无需 --experimental-transform-types；直接调用 loadCarConfig 的库方
+ * 在存在 car.config.ts 时须先 await 本函数（CLI 入口统一预热，协议不变）。
  */
 export async function warmCarConfig(opts: { explicitPath?: string; cwd?: string } = {}): Promise<void> {
   let path: string | undefined
@@ -203,9 +206,14 @@ export async function warmCarConfig(opts: { explicitPath?: string; cwd?: string 
   tsCache.set(path, result)
 }
 
-async function loadTsConfigFile(path: string, epoch: number): Promise<ConfigLoadResult> {
+async function loadTsConfigFile(path: string, _epoch: number): Promise<ConfigLoadResult> {
   try {
-    const mod = (await import(`${pathToFileURL(path).href}?cfg-epoch=${epoch}`)) as { default?: unknown }
+    // D-24：jiti 转译（零传递依赖 bundled）；每 epoch 新实例 + moduleCache 关——击穿语义保持；
+    // interopDefault 显式关（jiti 缺省 true 会把无 default 模块的 exports 整体当 default 返回，
+    // 「缺 default export」fail-visible 校验即失效）
+    const { createJiti } = await import('jiti')
+    const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false, interopDefault: false })
+    const mod = await jiti.import(path) as { default?: unknown }
     const raw = mod.default
     if (raw === undefined) {
       return { path, config: {}, error: `CAR-E-CONFIG: ${path} 缺 default export（car.config.ts 形态 = export default {…}）` }
@@ -217,10 +225,7 @@ async function loadTsConfigFile(path: string, epoch: number): Promise<ConfigLoad
     return v.error ? { path, config: {}, error: v.error } : { path, config: v.config }
   } catch (e) {
     const err = e as { code?: string; message?: string }
-    const hint = err.code === 'ERR_UNKNOWN_FILE_EXTENSION' || /Unknown file extension|loader/i.test(err.message ?? '')
-      ? `——当前 Node 未启用 .ts 载体（须 --experimental-transform-types 或 Node ≥23.6 原生类型剥离）`
-      : ''
-    return { path, config: {}, error: `CAR-E-CONFIG: car.config.ts 载入失败（${err.message}）${hint}` }
+    return { path, config: {}, error: `CAR-E-CONFIG: car.config.ts 载入失败（${err.message ?? String(e)}）——jiti 转译失败显式拒绝，不静默忽略` }
   }
 }
 

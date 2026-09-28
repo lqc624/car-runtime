@@ -461,9 +461,9 @@ async function main(): Promise<number> {
       // E-6 宿主实连入口（M4-S18）：CAR-as-MCP-Server——宿主（Claude Code/Codex）经 stdio JSON-RPC 接入
       // 1.1-S4 装载接线：--plugin <file|dir>（可重复）/ CAR_PLUGINS env → 六阶段流水线（verify 门先于
       // import()）挂载进 Context + car_load_total/car_unsigned_confirmed 全链计数。
-      // 边界（1.1 规划 W2-4，防口径外推）：此处是「装载接线 + 采集全链」——插件被真实装配
-      // （factory 执行 + bindCore 冲刷注册项），但宿主会话执行插件工具的执行接线属 W1 登记后续
-      // （sessionTurn 仍为事件批归一化）。
+      // 1.6-S2（D-25）宿主工具面透传接线：插件工具 Map 注入 RuntimeFacade——tool_list 出声明面
+      // （declaredSideEffect 不出站：权限面只进权限门红线）、tool_call 经权限门（write 类 policy
+      // 拒绝/readonly 执行）+ 成对落链；跨源同名 CAR-E-DUP fail-closed（1.4-S1 纪律同款）。
       const hostIdx = rest.indexOf('--host')
       const { HOST_MAPPINGS } = await import('./host/mappings.ts')
       // 默认宿主取映射表首项（数据驱动，静态架构断言红线：宿主标识只在 mappings 数据文件）
@@ -487,11 +487,12 @@ async function main(): Promise<number> {
         counters.onCount(name, labels)
         if (otel.enabled) otel.getMeter().createCounter(name).add(1, labels as Record<string, string> | undefined)
       }
+      // 1.6-S2：hostTools 提升到块外——跨源同名查重与 toolMap 装配在装载块之后统一收口
+      const hostTools: Array<{ name: string; description?: string; parameters?: unknown; declaredSideEffect?: 'readonly' | 'write'; run: (args: Record<string, unknown>) => Promise<unknown> }> = []
       if (pluginsArg.sources.length) {
         const { loadPlugins, formatLoadReport } = await import('./load/report.ts')
         const { Context } = await import('./kernel/context.ts')
         const ctx = new Context()
-        const hostTools: any[] = []
         for (const src of pluginsArg.sources) {
           const result = await loadPlugins({ source: src, signature: { ...sig.options, onCount: (n, l) => onCount(n, l) } })
           if (result.report.stages.some(s => s.status === 'FAIL')) {
@@ -511,14 +512,18 @@ async function main(): Promise<number> {
             } })
           }
           const names = result.plugins.map(p => `${p.manifest.name}@${p.manifest.version}`).join(', ')
-          console.error(`[car mcp-serve] plugins loaded: ${names}（tools: ${hostTools.map(t => t.name).join(', ') || '无'}；装载已接线，会话内执行接线属 W1 登记后续）`)
+          console.error(`[car mcp-serve] plugins loaded: ${names}（tools: ${hostTools.map(t => t.name).join(', ') || '无'}；装载+工具面透传已接线——1.6-S2）`)
         }
       }
       const { HostGateway } = await import('./host/hostGateway.ts')
       const { createRuntimeFacade } = await import('./host/facade.ts')
       const { createStdioServer } = await import('./host/stdio.ts')
       const profiles = new Map(HOST_MAPPINGS.map(h => [h.hostId, h]))
-      const facade = createRuntimeFacade({ profiles })
+      // 1.6-S2：跨源同名显式报错（禁静默覆盖——last-wins Map 语义下同名即歧义，fail-closed 启动中止）
+      const dupTool = hostTools.find((t, i) => hostTools.findIndex(x => x.name === t.name) !== i)
+      if (dupTool) { console.error(`CAR-E-DUP: 工具 "${dupTool.name}" 跨源同名——禁静默覆盖（mcp-serve fail-closed 启动中止）`); return 1 }
+      const toolMap = new Map(hostTools.map(t => [t.name as string, t]))
+      const facade = createRuntimeFacade({ profiles, ...(toolMap.size ? { tools: toolMap } : {}) })
       const gw = new HostGateway({ facade, audit: e => onCount('car_registry_decision', { source: 'registry' }) })
       for (const h of HOST_MAPPINGS) gw.registerHost({ hostId: h.hostId, profile: h, transport: {} as never })
       const server = createStdioServer((tool, args) => gw.handle(hostId, tool, args))

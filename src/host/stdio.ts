@@ -21,6 +21,9 @@ export interface StdioServer {
 
 export function createStdioServer(dispatch: StdioDispatcher): StdioServer {
   let nextId = 0
+  // 1.6-S2：tools/call 按请求序串行派发（会话态依赖 + 响应序确定性——JSON-RPC 允许乱序，
+  // 但 stdio 宿主与测试按序解析；tools/list 等同步方法不受此链影响）
+  let callChain: Promise<void> = Promise.resolve()
   return {
     async serve(input, output) {
       let count = 0
@@ -59,15 +62,19 @@ export function createStdioServer(dispatch: StdioDispatcher): StdioServer {
         if (req.method === 'tools/call') {
           const name = req.params?.name ?? ''
           const args = req.params?.arguments ?? {}
-          void dispatch(name, args).then(r => {
-            if (r.ok) respond({ content: [{ type: 'text', text: JSON.stringify(r.result ?? {}) }], carOk: true })
-            else respond(undefined, { code: -32000, message: r.error ?? 'host call failed' })
-          }).catch(e => respond(undefined, { code: -32000, message: String(e) }))
+          callChain = callChain
+            .then(() => dispatch(name, args))
+            .then(r => {
+              if (r.ok) respond({ content: [{ type: 'text', text: JSON.stringify(r.result ?? {}) }], carOk: true })
+              else respond(undefined, { code: -32000, message: r.error ?? 'host call failed' })
+            })
+            .catch(e => respond(undefined, { code: -32000, message: String(e) }))
           return
         }
         respond(undefined, { code: -32601, message: `unknown method "${req.method}"（支持 initialize / tools/list / tools/call）` })
       })
       await done
+      await callChain // 串行链收口：进程退出前最后一批调用响应写完（win32 退出断言同源教训）
       return count
     },
   }

@@ -4,6 +4,7 @@
  * 设计口径：
  *  - 哈希链（SHA-256）为 CAR 自研增强（dsh 无此物，源码级核实）——合规卖点落地
  *  - 「Model-visible means logged」：断言口径 = 请求时快照 === 日志前缀 [0, atSeq) 投影
+ *  - 1.6-S1（D-23）：投影对同 id toolResult 收敛 last-wins——事件面/审计面不动，模型可见流去冗余
  *  - append-only：本层仅暴露 append/verifyChain/deriveMessages/assertModelVisibleLogged
  */
 import { createHash } from 'node:crypto'
@@ -83,16 +84,33 @@ export class SessionLog {
     return null
   }
 
-  /** 投影：从日志前缀重建模型可见消息流（不依赖模型运行时状态） */
+  /**
+   * 投影：从日志前缀重建模型可见消息流（不依赖模型运行时状态）。
+   * 1.6-S1（D-23）同 id toolResult 收敛 last-wins：写类工具授权决策（runtime/toolResult）
+   * 与执行结果（plugin/toolResult）成对落链（M4 既有语义冻结——审计全量留痕不动），
+   * 模型可见流只保留最终结果（真实 provider 对重复 tool_call_id/tool_use_id 拒绝或未定义，
+   * 1.4 观察项经真实适配器落地升级为缺陷面）。id 缺席不收敛（hostRaw/无 id 载荷形态不变，
+   * golden ④ 投影语义兼容）；授权拒绝单条即唯一结果原样保留。适配器侧零改动（消费已收敛上游）。
+   */
   deriveMessages(upTo?: number): Array<{ role: string; [k: string]: unknown }> {
+    const scoped = upTo !== undefined ? this.events.slice(0, upTo) : this.events
+    const lastSeqById = new Map<string, number>()
+    for (const e of scoped) {
+      if (e.kind !== 'toolResult') continue
+      const id = (e.payload as { id?: unknown } | null)?.id
+      if (typeof id === 'string') lastSeqById.set(id, e.seq)
+    }
     const out: Array<{ role: string; [k: string]: unknown }> = []
-    for (const e of this.events) {
-      if (upTo !== undefined && e.seq >= upTo) break
+    for (const e of scoped) {
       if (e.kind === 'system') out.push({ role: 'system', content: e.payload })
       else if (e.kind === 'user') out.push({ role: 'user', content: e.payload })
       else if (e.kind === 'assistant') out.push({ role: 'assistant', content: e.payload })
       else if (e.kind === 'toolCall') out.push({ role: 'assistant', toolCall: e.payload })
-      else if (e.kind === 'toolResult') out.push({ role: 'toolResult', content: e.payload })
+      else if (e.kind === 'toolResult') {
+        const id = (e.payload as { id?: unknown } | null)?.id
+        if (typeof id === 'string' && lastSeqById.get(id) !== e.seq) continue // D-23：后续有同 id 最终结果，本条为授权中间记录
+        out.push({ role: 'toolResult', content: e.payload })
+      }
     }
     return out
   }
