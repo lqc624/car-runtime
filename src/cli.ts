@@ -526,7 +526,31 @@ async function main(): Promise<number> {
       const facade = createRuntimeFacade({ profiles, ...(toolMap.size ? { tools: toolMap } : {}) })
       const gw = new HostGateway({ facade, audit: e => onCount('car_registry_decision', { source: 'registry' }) })
       for (const h of HOST_MAPPINGS) gw.registerHost({ hostId: h.hostId, profile: h, transport: {} as never })
-      const server = createStdioServer((tool, args) => gw.handle(hostId, tool, args))
+      // 1.7-S3（D-28）：sessionTurn 挂 turn 级 span（无 step span——mcp-serve 无 model() 循环）。
+      // 挂点在装配层（1.4-S6 纪律同款）；facade 内部自增派生 turnId（T{n}）——调用前不可知，
+      // 经 setTurnId 回填；outcome = 归一化 turnEnd reason（枚举面零内容）。缺省关 = noop 句柄零出站。
+      const tracer = new TurnTracer(otel)
+      const server = createStdioServer(async (tool, args) => {
+        if (tool !== 'session_turn') return gw.handle(hostId, tool, args)
+        const turn = tracer.startTurn('')
+        try {
+          const r = await gw.handle(hostId, tool, args)
+          if (!r.ok) {
+            // handle 层吞错为 {ok:false}（显式错误结果不抛出）——span 面以 error 收口留痕
+            turn.recordException(new Error(r.error ?? 'host call failed'))
+            turn.end('error')
+            return r
+          }
+          const payload = (r.result ?? {}) as { reason?: string; steps?: number }
+          turn.setTurnId(`T${payload.steps ?? 0}`)
+          turn.end(String(payload.reason ?? 'completed'))
+          return r
+        } catch (e) {
+          turn.recordException(e)
+          turn.end('error')
+          throw e
+        }
+      })
       const n = await server.serve(process.stdin, process.stdout)
       // 采集窗口收口（登记表兜底通道）：快照写 stderr（stdout 为协议通道不可污染）
       const snap = counters.snapshot()

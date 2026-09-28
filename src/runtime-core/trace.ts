@@ -7,6 +7,11 @@
  *    「内容治理属调用方」口径）；设计微调登记：规划原文「runTurn opts.telemetry 注入面」改为装配层
  *    闭包挂点，语义等价（turn/step 层级与出站面不变），loop 层保持纯停止语义；
  *  - attributes 零内容面：turn_id/step 序号/outcome 枚举——无会话内容/提示词/路径。
+ *
+ * 1.7-S3（D-28）：mcp-serve turn span 面——sessionTurn 挂 turn 级 span（无 step span：mcp-serve
+ * 无 model() 循环，step span 面外推登记为不适用）。facade 内部自增派生 turnId（T{n}），装配层
+ * 调用前不可知——TurnSpanHandle 加法 `setTurnId` 回填面（car run 直传 turnId 路径不受影响）；
+ * startTurn('') 空值不设 car.turn_id 属性（回填前出站形态无占位内容）。
  */
 import { randomBytes } from 'node:crypto'
 import type { TelemetryFacade } from './telemetry.ts'
@@ -19,6 +24,10 @@ export interface StepSpanHandle {
 export interface TurnSpanHandle {
   traceId: string
   spanId: string
+  /** 1.7-D28：turnId 事后回填（mcp-serve——facade 内部自增派生，调用前不可知；car run 直传不受影响） */
+  setTurnId(turnId: string): void
+  /** 1.7-D28：turn 级异常留痕（D-26 exception 形态在 turn span 同样成立） */
+  recordException(e: unknown): void
   end(outcome: string): void
   stepSpan(step: number): StepSpanHandle
 }
@@ -33,14 +42,16 @@ export class TurnTracer {
 
   startTurn(turnId: string): TurnSpanHandle {
     if (!this.#facade) {
-      return { traceId: '', spanId: '', end() {}, stepSpan: () => ({ end() {}, recordException() {} }) }
+      return { traceId: '', spanId: '', setTurnId() {}, recordException() {}, end() {}, stepSpan: () => ({ end() {}, recordException() {} }) }
     }
     const tracer = this.#facade.getTracer()
     const traceId = randomBytes(16).toString('hex')
-    const turn = tracer.startSpan('car.turn', { attributes: { 'car.turn_id': turnId }, trace: { traceId } })
+    const turn = tracer.startSpan('car.turn', { attributes: turnId ? { 'car.turn_id': turnId } : {}, trace: { traceId } })
     return {
       traceId,
       spanId: turn.spanId,
+      setTurnId(id) { turn.setAttribute('car.turn_id', id) },
+      recordException(e) { turn.recordException(e) },
       end(outcome) {
         turn.setAttribute('car.outcome', outcome)
         turn.end()

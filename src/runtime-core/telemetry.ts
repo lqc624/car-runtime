@@ -21,6 +21,17 @@
  *    本面是 OTel 形态的出站通道，不承接 S17 的零内容红线语义（内容治理属调用方）；
  *  - 零依赖：OTel「标准句柄形态」自研（startSpan/attributes/end、createCounter/add），
  *    不引入 @opentelemetry/* 依赖（项目零依赖红线，README engines 纪律）。
+ *
+ * 1.7（D-26 span 语义标准化 / D-27 metrics 时序修正）：
+ *  - recordException → OTel 规范形态：span event（name='exception'，exception.type/exception.message
+ *    于事件属性）+ span status → STATUS_CODE_ERROR；stacktrace 缺省不出站（防路径/源码面外泄——
+ *    隐私三原则正向收紧；可选开关不随本迭代引入）；正常 span 恒 STATUS_CODE_UNSET（行为不变面）；
+ *  - addEvent → 标准 events 数组编码（name + attributes 原形态 + 事件时刻 timeUnixNano——
+ *    替换 1.1 起的 `event.<name>` JSON 属性串非标准形态）；
+ *  - 出站体 spans[] 加法字段 events/status（空形态合法——无事件 span 不出 events 键）；
+ *  - metrics 累计基数保持：flush 不再清空 counters——每次导出全量累计快照（真 CUMULATIVE）。
+ *    1.2-S3 起 clear() 与 AGGREGATION_TEMPORALITY_CUMULATIVE 标注矛盾：intervalMs>0 自动导出时
+ *    下游把增量解读为总量回落；内存有界由 label 基数保证（零内容枚举红线——AllowedLabels 3 计数器）。
  */
 import { randomBytes } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
@@ -153,6 +164,10 @@ interface SpanRecord {
   startMs: number
   endMs: number
   attributes: Record<string, string | number | boolean>
+  /** 1.7-S1（D-26）：标准 span events（name + 原形态属性 + 事件时刻） */
+  events: Array<{ name: string; atMs: number; attributes: Record<string, string | number | boolean> }>
+  /** 1.7-S1（D-26）：'STATUS_CODE_UNSET'（缺省）| 'STATUS_CODE_ERROR'（recordException） */
+  status: 'STATUS_CODE_UNSET' | 'STATUS_CODE_ERROR'
 }
 
 const attrValue = (v: string | number | boolean) =>
@@ -273,7 +288,15 @@ export function createTelemetryFacade(
               startTimeUnixNano: String(s.startMs * 1e6),
               endTimeUnixNano: String(s.endMs * 1e6),
               attributes: Object.entries(s.attributes).map(([key, v]) => ({ key, value: attrValue(v) })),
-              status: { code: 'STATUS_CODE_UNSET' },
+              // 1.7-S1（D-26）：标准 events/status 加法字段（无事件 span 不出 events 键——空形态合法）
+              ...(s.events.length ? {
+                events: s.events.map(e => ({
+                  timeUnixNano: String(e.atMs * 1e6),
+                  name: e.name,
+                  attributes: Object.entries(e.attributes).map(([key, v]) => ({ key, value: attrValue(v) })),
+                })),
+              } : {}),
+              status: { code: s.status },
             })),
           }],
         }
@@ -282,7 +305,9 @@ export function createTelemetryFacade(
       }
       if (counters.size) {
         const batch = [...counters.entries()]
-        counters.clear()
+        // 1.7-S2（D-27）：累计基数保持——不清空，每次导出全量累计快照（真 CUMULATIVE）。
+        // 1.2-S3 起 clear() 使后续导出仅含增量却标 CUMULATIVE——intervalMs>0 时下游解读为总量回落；
+        // 内存有界由 label 基数保证（零内容枚举红线：AllowedLabels 3 计数器）
         const body = {
           resource: { attributes: [{ key: 'service.name', value: { stringValue: serviceName } }] },
           scopeMetrics: [{
@@ -319,13 +344,29 @@ export function createTelemetryFacade(
         startMs: now(),
         endMs: 0,
         attributes: { ...startOpts?.attributes },
+        events: [],
+        status: 'STATUS_CODE_UNSET',
       }
       return {
         get traceId() { return record.traceId },
         get spanId() { return record.spanId },
         setAttribute(key, value) { record.attributes[key] = value; return this },
-        addEvent(evtName, attrs) { record.attributes[`event.${evtName}`] = attrs ? JSON.stringify(attrs) : evtName; return this },
-        recordException(err) { record.attributes['exception.message'] = String((err as Error)?.message ?? err); return this },
+        // 1.7-S1（D-26）：标准 events 编码——原形态属性 + 事件时刻（替换 event.<name> JSON 串）
+        addEvent(evtName, attrs) { record.events.push({ name: evtName, atMs: now(), attributes: attrs ? { ...attrs } : {} }); return this },
+        // 1.7-S1（D-26）：OTel 规范 exception 形态——exception.type/exception.message 事件属性
+        // + status ERROR；stacktrace 缺省不出站（D-26 口径：防路径/源码面外泄）
+        recordException(err) {
+          record.events.push({
+            name: 'exception',
+            atMs: now(),
+            attributes: {
+              'exception.type': String((err as Error)?.name ?? 'Error'),
+              'exception.message': String((err as Error)?.message ?? err),
+            },
+          })
+          record.status = 'STATUS_CODE_ERROR'
+          return this
+        },
         end() {
           record.endMs = now()
           stats.spansEnded++
