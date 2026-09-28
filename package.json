@@ -1,6 +1,6 @@
 {
   "name": "@lqc123qwe/car-runtime",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Composable Agent Runtime (CAR) - microkernel plugin system with sandboxed PTC, append-only hashed session log, and MCP host bridge",
   "license": "MIT",
   "type": "module",
