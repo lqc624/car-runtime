@@ -24,6 +24,8 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org/
+      - name: npm install（build 依赖面——@types/node 等 devDeps；裸 runner 无此步则 TS2688）
+        run: npm install
       - name: Build library dist (1.10.0 seam surface — tgz 打包前置，files 含 dist)
         run: npx -y -p typescript tsc -p tsconfig.build.json
       - name: Build release artifacts (single-source with local pipeline, W4-1)
