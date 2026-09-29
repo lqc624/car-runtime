@@ -13,6 +13,11 @@
  * （MCP `_meta` 保留扩展点——未知键对端忽略，加法无害）；仅 otel 显式开且 client span 存活时
  * 非空（trace.ts mcpToolSpan）——**缺省不注入，JSON-RPC 字节面不变**；tools/list 不注入
  * （注册期无 span 上下文，登记）。解析/校验归 trace.ts（parseTraceparent fail-open），本层原样透传。
+ *
+ * 1.9（D-32 远程 MCP 头通道）：callTool 把 opts.traceparent 加法透传给 transport.send 第二参——
+ * 载体由传输层自选（HTTP 通道注入 `traceparent` 请求头〔W3C Trace Context 惯例〕；stdio 通道
+ * 忽略 opts，`params._meta` 载体不变）。`_meta` 注入口径一字节不动——otel 开时 HTTP 请求
+ * 双载体同值（头为主消费面，登记）；otel 关时双载体零注入（头面与字节面不变）。
  */
 export interface JsonRpcRequest { jsonrpc: '2.0'; id: number; method: string; params?: unknown }
 export interface JsonRpcResponse { jsonrpc: '2.0'; id: number; result?: unknown; error?: { code: number; message: string } }
@@ -20,9 +25,10 @@ export interface JsonRpcResponse { jsonrpc: '2.0'; id: number; result?: unknown;
 /**
  * 客户端传输（CAR → MCP Server 方向）。M3-S11 双向分层：本接口为 client 侧对偶；
  * server 侧（宿主 → CAR）见 src/host/hostGateway.ts 的 ServerTransport。
+ * 1.9-D32：send 加法可选第二参 opts（既有 `send(req)` 实现结构兼容零改动）。
  */
 export interface ClientTransport {
-  send(req: JsonRpcRequest): Promise<JsonRpcResponse>
+  send(req: JsonRpcRequest, opts?: { traceparent?: string }): Promise<JsonRpcResponse>
   /** 进程/通道存活状态 */
   alive(): boolean
   /** 主动终止 */
@@ -113,10 +119,12 @@ export class McpGateway {
     if (!this.#tools.has(key)) return { ok: false, error: `unknown tool "${tool}" on "${serverId}"` }
     try {
       const res = await Promise.race([
+        // 1.9-D32：traceparent 加法透传第二参（载体归传输层——HTTP 头 / stdio 忽略）；
+        // `_meta` 注入 1.8-D29 口径不动（otel 开 = 双载体同值）
         cfg.transport.send({
           jsonrpc: '2.0', id: this.#nextId++, method: 'tools/call',
           params: { name: tool, arguments: args, ...(opts.traceparent ? { _meta: { traceparent: opts.traceparent } } : {}) },
-        }),
+        }, opts.traceparent ? { traceparent: opts.traceparent } : undefined),
         new Promise<never>((_, rej) => setTimeout(() => rej(new Error('mcp timeout')), opts.timeoutMs ?? 30_000)),
       ])
       return { ok: true, result: (res as JsonRpcResponse).result }

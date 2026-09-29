@@ -29,6 +29,11 @@
  *  - ptcRelay（D-31）：PTC worker 桥挂链——workerTrace 载荷（traceId/parentSpanId）经 workerData
  *    进隔离体，worker 计时经 done 消息回传后 complete() 主线程单点收口 car.ptc span（facade
  *    time.startMs/end(atMs) 时刻覆盖；单 exporter 纪律——worker 零独立出站通道）。
+ *
+ * 1.9（D-32 · 远程 MCP Streamable HTTP 头通道）：mcpToolSpan 产出的 traceparent 除 1.8 `params._meta`
+ * 载体外，经 gateway.callTool → transport.send 第二参透传，httpClient 注入 `traceparent` 请求头
+ * （W3C Trace Context HTTP 载体惯例——远程 server 主消费面）。本模块仅复用 parseTraceparent 作
+ * 传输层 fail-open 校验（畸形不注入不抛）——编解码与传播语义 1.8 口径零触碰。
  */
 import { randomBytes } from 'node:crypto'
 import type { TelemetryFacade } from './telemetry.ts'

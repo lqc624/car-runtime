@@ -14,13 +14,20 @@
  *  - headers 凭据规则（CR-05 经配置通道执行）：值支持 `${ENV_VAR}` 引用（env 缺席显式报错）；
  *    字面值疑似明文凭据（containsPlaintextCredential 同款模式）直接拒绝——env 引用注入
  *    才是登记合规通道（展开后值不复查：引注入即目的，展开值是凭据本身）；
- *  - legacy HTTP+SSE（2024-11-05）不做（1.5 规划 D-21 登记不追溯）。
+ *  - legacy HTTP+SSE（2024-11-05）不做（1.5 规划 D-21 登记不追溯）；
+ *  - 1.9（D-32 远程 MCP 头通道）：send 加法可选第二参 opts.traceparent → tools/call 请求头
+ *    加法 `traceparent`（W3C Trace Context HTTP 载体惯例——第三方 OTel 接入面主消费通道）；
+ *    注入前 parseTraceparent 校验，畸形**不注入不抛**（协议面 fail-open——严格格式天然排除
+ *    CR/LF，兼防头注入越权面）；otel 关 = 双载体零注入（头与 JSON-RPC 字节面不变）；
+ *    initialize/notifications/tools/list 不注入（无 span 上下文——1.8 tools/list 口径延伸）；
+ *    配置 headers 含字面 `traceparent` 时注入优先（动态 span 上下文为请求级事实，登记）。
  */
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { ClientTransport, JsonRpcRequest, JsonRpcResponse } from './gateway.ts'
 import { containsPlaintextCredential } from './gateway.ts'
 import { assertTlsOrLoopback } from '../runtime-core/llm.ts'
+import { parseTraceparent } from '../runtime-core/trace.ts'
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
 
@@ -127,8 +134,9 @@ export function createHttpMcpTransport(spec: HttpMcpServerSpec): ClientTransport
     throw new Error('CAR-E-MCP: SSE 流结束未见本请求响应（阶段：read-response）')
   }
 
-  async function postAndRead(body: unknown, matchId: number | null, phase: string): Promise<JsonRpcResponse> {
-    const res = await rawPost(spec.url, baseHeaders(), JSON.stringify(body), timeoutMs)
+  async function postAndRead(body: unknown, matchId: number | null, phase: string, extraHeaders: Record<string, string> = {}): Promise<JsonRpcResponse> {
+    // 1.9-D32：extraHeaders 展开在 baseHeaders 之后——配置头同名时注入优先（登记口径）
+    const res = await rawPost(spec.url, { ...baseHeaders(), ...extraHeaders }, JSON.stringify(body), timeoutMs)
     const sid = res.headers['mcp-session-id']
     if (typeof sid === 'string') sessionId = sid
     if (res.status < 200 || res.status >= 300) {
@@ -158,15 +166,25 @@ export function createHttpMcpTransport(spec: HttpMcpServerSpec): ClientTransport
     }
   }
 
+  /**
+   * 1.9-D32：tools/call 请求的 `traceparent` 头（W3C Trace Context HTTP 载体惯例）——
+   * parseTraceparent 校验 fail-open（畸形/空 = {} 不注入不抛；严格 hex 格式排除 CR/LF 头注入面）；
+   * 与 body params._meta.traceparent 双载体同值并存（1.8-D29 `_meta` 面维持，头为主消费面）。
+   */
+  function callHeaders(tp: string | undefined): Record<string, string> {
+    if (!tp || !parseTraceparent(tp)) return {}
+    return { traceparent: tp }
+  }
+
   const transport: ClientTransport = {
-    send(req: JsonRpcRequest): Promise<JsonRpcResponse> {
+    send(req: JsonRpcRequest, opts?: { traceparent?: string }): Promise<JsonRpcResponse> {
       return (async (): Promise<JsonRpcResponse> => {
         if (closed) throw new Error('CAR-E-MCP: http transport closed（server 已收口）')
         if (!initialized) {
           initPromise ??= doInitialize().then(() => { initialized = true })
           try { await initPromise } catch (e) { initPromise = null; throw e }
         }
-        return postAndRead(req, req.id, 'request')
+        return postAndRead(req, req.id, 'request', callHeaders(opts?.traceparent))
       })()
     },
     alive: () => !closed,
