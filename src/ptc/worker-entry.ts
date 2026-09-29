@@ -6,7 +6,10 @@
  *  - 程序体 = async 函数体（顶层 await/return 支持，dsh 一手口径）；
  *  - tools proxy：await tools.<name>(args) → postMessage {type:'tool'} → 主线程执行 → {type:'tool-result'} 回传；
  *  - 预算：maxWallMs 计时超限 → done(error='budget-exceeded (maxWallMs)')；maxOutputBytes 序列化后检查；
- *  - done 消息单发即退——程序体 = 一次原子 toolCall（收口点唯一在 executor 返回）。
+ *  - done 消息单发即退——程序体 = 一次原子 toolCall（收口点唯一在 executor 返回）；
+ *  - 1.8-D31：done 加法 span 字段（程序窗口 startMs/endMs——worker 侧 Date.now 计时，
+ *    worker_threads 同进程同时钟域；主线程 relay 收口 car.ptc span——单 exporter 纪律，
+ *    本隔离体零独立出站通道；程序未启动〔wallTimer 抢先〕不产 span 字段）。
  */
 import { parentPort, workerData } from 'node:worker_threads'
 
@@ -32,8 +35,10 @@ const tools: Record<string, (args: unknown) => Promise<unknown>> = new Proxy({},
 })
 
 const budget = (workerData as { budget: { maxWallMs: number; maxOutputBytes: number } }).budget
+// 1.8-D31：程序窗口计时（null = 程序未启动——wallTimer 抢先不产 span 字段）
+let spanStart: number | null = null
 const finish = (msg: { type: 'done'; result?: unknown; error?: string }) => {
-  port.postMessage(msg)
+  port.postMessage({ ...msg, ...(spanStart !== null ? { span: { startMs: spanStart, endMs: Date.now() } } : {}) })
   setTimeout(() => process.exit(0), 50) // 让消息冲刷
 }
 
@@ -52,6 +57,7 @@ void (async () => {
     const body = js.replace(/^export default /, 'return ')
     // 程序体 = async 函数体（顶层 await/return）；tools 为受控 proxy（仅显式调用，无宿主 import 面）
     const fn = new Function('tools', '"use strict";\n' + body + '\n') as (t: typeof tools) => () => Promise<unknown>
+    spanStart = Date.now()
     const result = await fn(tools)()
     clearTimeout(wallTimer)
     const out = JSON.stringify(result ?? null)

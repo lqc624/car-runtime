@@ -15,11 +15,18 @@
  *  - declaredSideEffect 不出站（权限面只进权限门，不进模型请求体）；
  *  - 1.5-S1（D-20）：内置 anthropic 适配器（Messages API 流式；max_tokens 必填缺省 4096；
  *    system 顶层化；凭据 provider='anthropic'）。
+ *  - 1.8-BUG-1：出站缺省通道 node:http(s)（nodeHttpSseFetch——1.4-BUG-2 口径延伸到 LLM 面）：
+ *    全局 fetch/undici socket 在 win32 进程退出时触发 libuv 断言崩溃（UV_HANDLE_CLOSING,
+ *    0xC0000409）——car run 真路径 ≥3 次模型请求 + PTC worker/MCP 子进程并存即确定性复现
+ *    （1.4 彼时仅修遥测出站，LLM 出站同为 undici 默认——潜伏至 1.8 E2E 三请求形态暴露）；
+ *    流式契约 body = AsyncIterable<Uint8Array> 不变；测试注入缝 fetchImpl 保留。
  */
 import { CarM8Error, providerUnreachable } from './errors.ts'
 import { CredentialService } from './credentials.ts'
 import type { Disposable, LlmAdapter, LlmChunk, LlmRequest, ToolCallDelta } from './types.ts'
 import type { PluginContext } from '../kernel/context.ts'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 
 // ==================== 适配器注册表（registerLlmAdapter） ====================
 
@@ -139,6 +146,44 @@ interface SsePostSpec {
   backoffMs: number[]
   sleep: (ms: number) => Promise<void>
 }
+
+/** 1.8-BUG-1：node:http(s) 出站响应（streamSsePost 消费契约子集——ok/status/text()/body 流） */
+interface SseFetchResponse { ok: boolean; status: number; text(): Promise<string>; body: AsyncIterable<Uint8Array> }
+
+/**
+ * 1.8-BUG-1：LLM 出站缺省通道——node:http(s) 流式 POST（1.4-BUG-2 同源口径：全局 fetch/undici
+ * socket + win32 进程退出触发 libuv 断言崩溃 0xC0000409；详见面头注记）。流式契约：IncomingMessage
+ * 本体即 AsyncIterable<Uint8Array>（Buffer 子类）；取消经 AbortSignal → req.destroy（流中途 destroy
+ * = 迭代器抛错，streamSsePost D-19 路径收口）；传输层超时不设——§3.5.4 firstByte/overall 由调用方
+ * AbortController 单点承载。
+ */
+const nodeHttpSseFetch = (url: string, init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal } = {}): Promise<SseFetchResponse> => new Promise((resolve, reject) => {
+  try {
+    const u = new URL(url)
+    const mod = u.protocol === 'https:' ? httpsRequest : httpRequest
+    const req = mod(u, { method: init.method ?? 'GET', headers: init.headers }, res => {
+      const status = res.statusCode ?? 0
+      resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        text: () => new Promise<string>((res2, rej2) => {
+          let s = ''
+          res.on('data', c => { s += c.toString('utf-8') })
+          res.on('end', () => res2(s))
+          res.on('error', rej2)
+        }),
+        body: res,
+      })
+    })
+    const onAbort = () => { try { req.destroy(new Error('aborted')) } catch { /* 已完成 */ } }
+    if (init.signal) {
+      if (init.signal.aborted) onAbort()
+      else init.signal.addEventListener('abort', onAbort, { once: true })
+    }
+    req.on('error', reject)
+    req.end(init.body ?? null)
+  } catch (e) { reject(e) }
+})
 
 /**
  * §3.5.4 流式 POST 引擎（openai-compat / anthropic 单点共用，1.5-S1 抽取——两适配器重试/
@@ -300,7 +345,8 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
   // 1.4-S4（D-12a，1.2 规划期裁决）：TLS 门 1.5-S1 抽取共用（口径与报错文案不变）
   assertTlsOrLoopback(baseUrl)
   const url = `${baseUrl}/chat/completions`
-  const fetchImpl = opts.fetchImpl ?? fetch
+  // 1.8-BUG-1：缺省 node:http(s)（undici 退出崩溃——面头注记）；注入缝保留
+  const fetchImpl = opts.fetchImpl ?? nodeHttpSseFetch as unknown as typeof fetch
   const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
   const timeoutMs = opts.timeoutMs ?? 120_000
   const firstByteMs = opts.firstByteMs ?? 30_000
@@ -503,7 +549,8 @@ export function createAnthropicAdapter(opts: AnthropicAdapterOptions): LlmAdapte
   const baseUrl = opts.baseUrl.replace(/\/+$/, '')
   assertTlsOrLoopback(baseUrl)
   const url = `${baseUrl}/v1/messages`
-  const fetchImpl = opts.fetchImpl ?? fetch
+  // 1.8-BUG-1：缺省 node:http(s)（undici 退出崩溃——面头注记）；注入缝保留
+  const fetchImpl = opts.fetchImpl ?? nodeHttpSseFetch as unknown as typeof fetch
   const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
   const timeoutMs = opts.timeoutMs ?? 120_000
   const firstByteMs = opts.firstByteMs ?? 30_000

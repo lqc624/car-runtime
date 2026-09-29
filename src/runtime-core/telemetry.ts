@@ -32,6 +32,10 @@
  *  - metrics 累计基数保持：flush 不再清空 counters——每次导出全量累计快照（真 CUMULATIVE）。
  *    1.2-S3 起 clear() 与 AGGREGATION_TEMPORALITY_CUMULATIVE 标注矛盾：intervalMs>0 自动导出时
  *    下游把增量解读为总量回落；内存有界由 label 基数保证（零内容枚举红线——AllowedLabels 3 计数器）。
+ *
+ * 1.8（D-31 PTC worker relay span 时刻覆盖）：startSpan 加法 time.startMs / end 加法 atMs——
+ * 跨隔离体计时回传（worker_threads 同进程同时钟域）后主线程单点收口（trace.ts ptcRelay）；
+ * 采样/buffer 上限/出站形态路径零改动（relay span 走既有 end() 全路径）。缺省时刻行为不变。
  */
 import { randomBytes } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
@@ -67,7 +71,8 @@ export interface TelemetrySpan {
   setAttribute(key: string, value: string | number | boolean): this
   addEvent(name: string, attrs?: Record<string, string | number | boolean>): this
   recordException(err: unknown): this
-  end(): void
+  /** 1.8-D31：atMs = 结束时刻覆盖（跨隔离体计时 relay；缺省 now() 行为不变） */
+  end(atMs?: number): void
   readonly traceId: string
   /** 1.4-S6：子 span 挂链需要父 spanId（TurnTracer turn→step 层级） */
   readonly spanId: string
@@ -78,6 +83,8 @@ export interface TelemetryTracer {
     attributes?: Record<string, string | number | boolean>
     /** 1.4-S6：trace 透传（traceId 复用 + parentSpanId 挂链）；缺省 = 新独立 trace */
     trace?: { traceId: string; parentSpanId?: string }
+    /** 1.8-D31：起始时刻覆盖（跨隔离体计时 relay；缺省 now() 行为不变） */
+    time?: { startMs: number }
   }): TelemetrySpan
 }
 
@@ -341,7 +348,8 @@ export function createTelemetryFacade(
         spanId: randomBytes(8).toString('hex'),
         parentSpanId: startOpts?.trace?.parentSpanId ?? null,
         name,
-        startMs: now(),
+        // 1.8-D31：起始时刻覆盖（跨隔离体计时 relay；缺省 now() 行为不变）
+        startMs: startOpts?.time?.startMs ?? now(),
         endMs: 0,
         attributes: { ...startOpts?.attributes },
         events: [],
@@ -367,8 +375,8 @@ export function createTelemetryFacade(
           record.status = 'STATUS_CODE_ERROR'
           return this
         },
-        end() {
-          record.endMs = now()
+        end(atMs) {
+          record.endMs = atMs ?? now()
           stats.spansEnded++
           // head 采样于 end() 决策（1.2-S3）：缺省 always_on 全量（1.1 行为不变）；采样只减少出站
           const keep = sampling === 'always_on' ? true

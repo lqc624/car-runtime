@@ -8,6 +8,13 @@
  *  - erasable-only 双挂点之一（本入口）；挂点二在 loader 提交链（mountPlugin）；
  *  - **预算到期不掐 turn**：超限 = 工具错误结果交回模型（TurnEndReason 六值零扩展，ADR-001 兼容）；
  *  - 并发护栏（自研五维）：并发 4 / 子调用超时 30s / 总 worker 存活由本执行器串行门管控。
+ *
+ * 1.8（D-31 PTC worker 桥挂链）：opts.spanBridge 加法（otel 显式开且 turn span 存活时非空）——
+ * worker 侧程序计时（Date.now，worker_threads 同进程同时钟域）经 done 消息加法 span 字段回传，
+ * 主线程经 bridge.complete() 单点收口 car.ptc span（trace.ts ptcRelay——trace 挂链 turn /
+ * facade 时刻覆盖）；**单 exporter 纪律：worker 零独立出站通道、零 trace 载荷注入**（worker 无
+ * outbound 面——挂链由主线程句柄归因 + 计时 relay 完成）。主侧 killer / worker error 兜底路径
+ * 无 done 回传（terminate/崩溃抢先），以主线程时钟收口（口径登记：兜底非 worker 计时）。
  */
 import { Worker } from 'node:worker_threads'
 import { fileURLToPath } from 'node:url'
@@ -22,13 +29,19 @@ export interface PtcResult { ok: boolean; result?: unknown; error?: string; wall
 
 export interface ToolBridge { run(args: unknown): Promise<unknown> }
 
+/** 1.8-D31：PTC 桥挂链面（结构兼容 trace.ts PtcRelayHandle——ptc 模块不依赖 runtime-core/trace） */
+export interface PtcSpanBridge {
+  complete(startMs: number, endMs: number, outcome: string, error?: unknown): void
+}
+
 const WORKER_PATH = join(dirname(fileURLToPath(import.meta.url)), 'worker-entry.ts')
 const MAX_CONCURRENT = 4
 let active = 0
 
 /** PTC 程序执行：每次新 worker；子调用经消息桥回主线程执行工具（宿主权限门生效面） */
 export interface RunCodeOpts { tools: Map<string, ToolBridge>; audit?: (d: Record<string, unknown>) => void
-  /** 授权门（S15）：返回 false = 拒绝（无 worker 启动，审计留痕）；authorizationId 幂等由 authz 服务承载 */ authorize?: (req: PtcRequest) => Promise<boolean> }
+  /** 授权门（S15）：返回 false = 拒绝（无 worker 启动，审计留痕）；authorizationId 幂等由 authz 服务承载 */ authorize?: (req: PtcRequest) => Promise<boolean>
+  /** 1.8-D31：桥挂链供给（每次 runCode 一次——每程序新 worker；null = 无遥测零 relay） */ spanBridge?: () => { complete(startMs: number, endMs: number, outcome: string, error?: unknown): void } | null }
 
 export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcResult> {
   // 双必填（description 为授权凭据——S15 授权门消费）
@@ -51,6 +64,8 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
   }
   const started = Date.now()
   active++
+  // 1.8-D31：桥挂链供给（每次 runCode 一次）；null = 无遥测零 relay
+  const relay = opts.spanBridge?.() ?? null
   opts.audit?.({ kind: 'ptc-start', description: req.description, toolCallId: req.toolCallId, budget })
   try {
     return await new Promise<PtcResult>((resolve) => {
@@ -61,9 +76,11 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
       // 主线程侧兜底（worker 内计时器失效时强杀——双层预算）
       const killer = setTimeout(() => {
         void worker.terminate()
+        // 1.8-D31：兜底收口（主线程时钟——terminate 抢先无 done relay，口径登记）
+        relay?.complete(started, Date.now(), 'error', new Error(`budget-exceeded (maxWallMs=${budget.maxWallMs}, main-side guard)`))
         resolve({ ok: false, error: `budget-exceeded (maxWallMs=${budget.maxWallMs}, main-side guard)`, wallMs: Date.now() - started, outputBytes: 0, budgetExceeded: true })
       }, budget.maxWallMs + 1000)
-      worker.on('message', (m: { type: string; callId?: string; name?: string; args?: unknown; result?: unknown; error?: string }) => {
+      worker.on('message', (m: { type: string; callId?: string; name?: string; args?: unknown; result?: unknown; error?: string; span?: { startMs: number; endMs: number } }) => {
         if (m.type === 'tool') {
           const def = opts.tools.get(m.name!)
           // 工具异常必须回传为 tool-result error（供程序体 try/catch 恢复）——
@@ -78,6 +95,8 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
         }
         if (m.type === 'done') {
           clearTimeout(killer)
+          // 1.8-D31：worker 计时 relay 收口（error 路径同样收口——D-26 exception 形态成立）
+          if (m.span && relay) relay.complete(m.span.startMs, m.span.endMs, m.error ? 'error' : 'ok', m.error)
           // F12 出站覆盖：worker 输出回填上下文前强制 redact（M3安全设计增补 T-4）
           let result = m.result
           let secretsRedacted = 0
@@ -101,7 +120,7 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
           })
         }
       })
-      worker.on('error', (e) => { clearTimeout(killer); resolve({ ok: false, error: String(e), wallMs: Date.now() - started, outputBytes: 0 }) })
+      worker.on('error', (e) => { clearTimeout(killer); relay?.complete(started, Date.now(), 'error', e); resolve({ ok: false, error: String(e), wallMs: Date.now() - started, outputBytes: 0 }) })
       worker.on('exit', (code) => { clearTimeout(killer); active-- })
       // exit 可能先于 done（budget killer）——兜底 resolve 幂等由 Promise 语义保证
     })
@@ -112,7 +131,8 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
 }
 
 /** PTC 作为一等 ToolDefinition：强制 write 侧效应（授权门无旁路），接入 runTurn 工具面 */
-export function makePtcToolDefinition(opts: { tools: Map<string, ToolBridge>; audit?: (d: Record<string, unknown>) => void }) {
+export function makePtcToolDefinition(opts: { tools: Map<string, ToolBridge>; audit?: (d: Record<string, unknown>) => void
+  /** 1.8-D31：桥挂链供给透传（每次 runCode 一次；缺省 = 无遥测零 relay） */ spanBridge?: () => { complete(startMs: number, endMs: number, outcome: string, error?: unknown): void } | null }) {
   return {
     name: 'run_code',
     description: '执行一段 erasable TypeScript 程序（PTC）——程序体内经 tools.<name>(args) 调用已注册工具',

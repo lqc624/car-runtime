@@ -32,7 +32,7 @@ import { CredentialService } from './runtime-core/credentials.ts'
 import { chatStep } from './runtime-core/chatStep.ts'
 import { toToolDefinitions } from './runtime-core/tools.ts'
 import { createTelemetryFacade, telemetryConfigFromEnv } from './runtime-core/telemetry.ts'
-import { TurnTracer } from './runtime-core/trace.ts'
+import { TurnTracer, parseTraceparent, type TurnSpanHandle } from './runtime-core/trace.ts'
 import type { CounterName, AllowedLabels } from './telemetry/metrics.ts'
 
 const HELP = `用法: car <command> [args]
@@ -216,6 +216,8 @@ async function main(): Promise<number> {
             }), { default: true })
         // MCP 工具进 turn（D-18）：--mcp <serverId>（可重复；server 启动规格在 car.config.json mcp.servers 登记）
         const mcpIds: string[] = []
+        // 1.8-D29：活跃 turn span 句柄（startTurn 后赋值——MCP 工具闭包运行期取 client span 挂链面）
+        let activeTurn: TurnSpanHandle | null = null
         for (let i = 0; i < rest.length; i++) {
           if (rest[i] === '--mcp') {
             const id = rest[++i]
@@ -243,7 +245,22 @@ async function main(): Promise<number> {
               if (toolsMap.has(modelName)) { console.error(`CAR-E-MCP: 工具名冲突 ${modelName}（跨源同名禁静默覆盖）`); return 1 }
               toolsMap.set(modelName, {
                 declaredSideEffect: t.declaredSideEffect ?? 'write',
-                run: async (args: any) => { const r = await gw.callTool(id, t.name, args); if (!r.ok) throw new Error(r.error ?? 'mcp call failed'); return r.result },
+                // 1.8-D29：client span（car.mcp.tool 挂 turn）+ traceparent 注入 _meta——
+                // noop 门面 traceparent='' → 不注入（线上 JSON-RPC 字节面不变）
+                run: async (args: any) => {
+                  const span = activeTurn?.mcpToolSpan(id, t.name)
+                  const tp = span?.traceparent ?? ''
+                  try {
+                    const r = await gw.callTool(id, t.name, args, tp ? { traceparent: tp } : {})
+                    if (!r.ok) throw new Error(r.error ?? 'mcp call failed')
+                    span?.end('ok')
+                    return r.result
+                  } catch (e) {
+                    span?.recordException(e)
+                    span?.end('error')
+                    throw e
+                  }
+                },
                 ...(t.description !== undefined ? { description: t.description } : {}),
                 ...(t.inputSchema !== undefined ? { parameters: t.inputSchema } : {}),
               })
@@ -260,7 +277,7 @@ async function main(): Promise<number> {
           const { renderSdkFromRegistry } = await import('./ptc/sdk.ts')
           const registry = new Map([...toolsMap].map(([name, t]) => [name, { run: t.run, description: t.description, inputSchema: t.parameters }]))
           sdkBlock = renderSdkFromRegistry(registry)
-          const ptc = makePtcToolDefinition({ tools: registry, audit: () => {} })
+          const ptc = makePtcToolDefinition({ tools: registry, audit: () => {}, spanBridge: () => activeTurn?.ptcRelay() ?? null })
           toolsMap.set(ptc.name, ptc)
           console.log(`[PTC] run_code 入工具面（桥接 ${registry.size} 工具；SDK 声明块进 system）`)
         }
@@ -270,6 +287,7 @@ async function main(): Promise<number> {
         if (sdkBlock) log.append('runtime', 'system', 'system', sdkBlock)
         log.append('user', 'user', 'T0', prompt)
         const turn = tracer.startTurn('T0')
+        activeTurn = turn // 1.8-D29/D-31：MCP 工具闭包 / PTC spanBridge 运行期取挂链面
         let stepNo = 0
         r = await runTurn({
           log, turnId: 'T0',
@@ -530,9 +548,14 @@ async function main(): Promise<number> {
       // 挂点在装配层（1.4-S6 纪律同款）；facade 内部自增派生 turnId（T{n}）——调用前不可知，
       // 经 setTurnId 回填；outcome = 归一化 turnEnd reason（枚举面零内容）。缺省关 = noop 句柄零出站。
       const tracer = new TurnTracer(otel)
-      const server = createStdioServer(async (tool, args) => {
+      const server = createStdioServer(async (tool, args, meta) => {
         if (tool !== 'session_turn') return gw.handle(hostId, tool, args)
-        const turn = tracer.startTurn('')
+        // 1.8-D30：远端挂链——_meta.traceparent 合法 → turn span 加入宿主 trace
+        // （traceId 复用 + parentSpanId=远端 spanId；畸形 fail-open 新 trace——遥测禁 fail-hard）
+        const parent = otel.enabled && meta?.traceparent ? parseTraceparent(meta.traceparent) : null
+        const turn = parent
+          ? tracer.startTurn('', { trace: { traceId: parent.traceId, parentSpanId: parent.parentSpanId } })
+          : tracer.startTurn('')
         try {
           const r = await gw.handle(hostId, tool, args)
           if (!r.ok) {

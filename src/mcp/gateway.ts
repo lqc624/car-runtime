@@ -8,6 +8,11 @@
  *  - Server 崩溃/超时 → BD-02 整体标记不可用，不传导进内核主链路（US-6 AC4）
  *  - McpServerConfig.env 禁明文密钥（疑似凭据模式即拒绝，sk- 前缀等——§3.2.5 传参禁忌）
  *  - 传输抽象：stdio 真实通道（JSON-RPC over 换行分隔 JSON）/ in-process 测试通道
+ *
+ * 1.8（D-29 W3C traceparent client 侧注入）：callTool 加法 opts.traceparent → params._meta
+ * （MCP `_meta` 保留扩展点——未知键对端忽略，加法无害）；仅 otel 显式开且 client span 存活时
+ * 非空（trace.ts mcpToolSpan）——**缺省不注入，JSON-RPC 字节面不变**；tools/list 不注入
+ * （注册期无 span 上下文，登记）。解析/校验归 trace.ts（parseTraceparent fail-open），本层原样透传。
  */
 export interface JsonRpcRequest { jsonrpc: '2.0'; id: number; method: string; params?: unknown }
 export interface JsonRpcResponse { jsonrpc: '2.0'; id: number; result?: unknown; error?: { code: number; message: string } }
@@ -97,7 +102,7 @@ export class McpGateway {
   isAvailable(serverId: string): boolean { return this.#servers.has(serverId) && !this.#unavailable.has(serverId) }
 
   /** 调用：走统一权限/审计链路（无旁路）；结果回填日志前必经 redact（调用方职责） */
-  async callTool(serverId: string, tool: string, args: Record<string, unknown>, opts: { timeoutMs?: number } = {}): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+  async callTool(serverId: string, tool: string, args: Record<string, unknown>, opts: { timeoutMs?: number; /** 1.8-D29：W3C traceparent（otel 显式开且 client span 存活时非空；缺省不注入 _meta） */ traceparent?: string } = {}): Promise<{ ok: boolean; result?: unknown; error?: string }> {
     const cfg = this.#servers.get(serverId)
     if (!cfg) throw new Error('CAR-A050001: unregistered MCP connection rejected（登记制）')
     if (this.#unavailable.has(serverId)) {
@@ -108,7 +113,10 @@ export class McpGateway {
     if (!this.#tools.has(key)) return { ok: false, error: `unknown tool "${tool}" on "${serverId}"` }
     try {
       const res = await Promise.race([
-        cfg.transport.send({ jsonrpc: '2.0', id: this.#nextId++, method: 'tools/call', params: { name: tool, arguments: args } }),
+        cfg.transport.send({
+          jsonrpc: '2.0', id: this.#nextId++, method: 'tools/call',
+          params: { name: tool, arguments: args, ...(opts.traceparent ? { _meta: { traceparent: opts.traceparent } } : {}) },
+        }),
         new Promise<never>((_, rej) => setTimeout(() => rej(new Error('mcp timeout')), opts.timeoutMs ?? 30_000)),
       ])
       return { ok: true, result: (res as JsonRpcResponse).result }

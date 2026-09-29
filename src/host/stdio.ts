@@ -6,12 +6,16 @@
  *  - 方法面：initialize/notifications 握手（MCP 协议兼容）+ tools/list（10 tool 能力发现）+ tools/call（分发到 HostGateway.handle）；
  *  - 所有到达请求与响应均经 HostGateway 审计（无旁路）；未登记宿主在 handle 层拒绝；
  *  - stdin 结束（宿主退出）→ 通道关闭，进程内状态由审计日志承载（BD-02 等价：不静默丢数据）。
+ *
+ * 1.8（D-30 W3C traceparent server 侧提取）：tools/call params._meta 原样透传 dispatch 第三参——
+ * 解析/校验归装配层（trace.ts parseTraceparent fail-open），传输层保持无协议语义；未知键对端
+ * 忽略（MCP `_meta` 保留扩展点），缺席 = meta 缺省 undefined（既有调用方零改动）。
  */
 import { createInterface } from 'node:readline'
 import { HOST_TOOLS, type HostTool } from './hostGateway.ts'
 
 export interface StdioDispatcher {
-  (tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; result?: unknown; error?: string }>
+  (tool: string, args: Record<string, unknown>, meta?: { traceparent?: string }): Promise<{ ok: boolean; result?: unknown; error?: string }>
 }
 
 export interface StdioServer {
@@ -62,8 +66,10 @@ export function createStdioServer(dispatch: StdioDispatcher): StdioServer {
         if (req.method === 'tools/call') {
           const name = req.params?.name ?? ''
           const args = req.params?.arguments ?? {}
+          // 1.8-D30：_meta 原样透传（解析归装配层）；缺席 = undefined
+          const meta = (req.params as { _meta?: { traceparent?: string } } | undefined)?._meta
           callChain = callChain
-            .then(() => dispatch(name, args))
+            .then(() => dispatch(name, args, meta))
             .then(r => {
               if (r.ok) respond({ content: [{ type: 'text', text: JSON.stringify(r.result ?? {}) }], carOk: true })
               else respond(undefined, { code: -32000, message: r.error ?? 'host call failed' })
