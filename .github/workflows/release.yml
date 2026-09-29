@@ -24,6 +24,8 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org/
+      - name: Build library dist (1.10.0 seam surface — tgz 打包前置，files 含 dist)
+        run: npx -y -p typescript tsc -p tsconfig.build.json
       - name: Build release artifacts (single-source with local pipeline, W4-1)
         run: node --experimental-transform-types scripts/release-artifacts.ts
       - name: Install cosign (pinned, R-4)

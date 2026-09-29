@@ -43,6 +43,10 @@ jobs:
         run: npm audit --omit=dev --audit-level=high || echo "::warning::npm audit findings — 见日志"
       - name: 密钥扫描（仓库级 fail-closed）
         run: node --experimental-transform-types scripts/secrets-scan.ts
+      - name: 库构建验证（1.10.0 seam 面——dist 产物 + s44 装载断言；置于扫描后防生成物干扰）
+        run: |
+          npx -y -p typescript tsc -p tsconfig.build.json
+          node --experimental-transform-types --test-reporter=tap --test test/s44-seam-export.spec.ts
       - name: landlock-run 单点编译（M3 §2.1.2 构建单源）
         run: |
           make -C native/landlock-run
