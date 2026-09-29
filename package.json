@@ -1,12 +1,27 @@
 {
   "name": "@lqc123qwe/car-runtime",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "Composable Agent Runtime (CAR) - microkernel plugin system with sandboxed PTC, append-only hashed session log, and MCP host bridge",
   "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
   },
+  "main": "./dist/seam.js",
+  "types": "./dist/seam.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/seam.d.ts",
+      "import": "./dist/seam.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lqc624/car-runtime.git"
@@ -16,6 +31,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "node --experimental-transform-types --test test/",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
