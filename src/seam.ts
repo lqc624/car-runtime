@@ -5,6 +5,8 @@
  *  - 仅暴露进程内挂接所需的最窄面（装配/会话/turn/遥测），禁止透出内核内部模块路径语义；
  *  - 破坏性变更须内核 major；加法演进走 minor 并在本文件头登记；
  *  - 语义不变：runTurn/chatStep/SessionLog 即 CLI 与测试承载的同一实现（非转发壳）。
+ *
+ * 加法登记：1.11.0 —— AuthzService/checkCapability 出面（平台确认桥幂等决策 + 会话策略直判承载；F4 US-3 语义同源）。
  */
 export { SessionLog, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
 export { SessionFileStore } from './session/store.ts'
@@ -17,5 +19,6 @@ export { mountPlugin } from './load/loader.ts'
 export { Context } from './kernel/context.ts'
 export { loadCarConfig, mergeLlmConfig, mergeSignatureGate, warmCarConfig, type CarConfig, type LlmConfig } from './load/config.ts'
 export { probeCapabilities, SandboxExecutor } from './sandbox/sandbox.ts'
+export { AuthzService, checkCapability, type Decision, type AuthzRequest, type AuthzDecision, type DeclaredCapabilities } from './authz/authz.ts'
 export { createTelemetryFacade, telemetryConfigFromEnv } from './runtime-core/telemetry.ts'
 export { TurnTracer, type TurnSpanHandle } from './runtime-core/trace.ts'

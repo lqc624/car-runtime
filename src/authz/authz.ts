@@ -61,6 +61,18 @@ export class AuthzService {
     return this.#commit(decision)
   }
 
+  /** 会话策略直判（「会话内始终允许」粒度）：decidedBy=policy 幂等落链，不入人审通道（审批回调 scope=session 写入 grants 后走此路） */
+  decideBySessionPolicy(req: AuthzRequest): AuthzDecision {
+    return this.#commit({
+      authorizationId: req.authorizationId,
+      decision: 'APPROVED',
+      decidedBy: 'policy',
+      reason: `session policy grant (always-allow): ${req.resource}`,
+      degraded: this.#degraded,
+      ts: Date.now(),
+    })
+  }
+
   /** 人审（confirm 模式）：120s 超时默认拒绝（timeout-default-deny） */
   async decideByUser(req: AuthzRequest, approve: (req: AuthzRequest) => Promise<boolean>): Promise<AuthzDecision> {
     const cached = this.#decisions.get(req.authorizationId)

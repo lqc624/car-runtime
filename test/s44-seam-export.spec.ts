@@ -1,7 +1,7 @@
 /**
- * s44 · KernelSeam 导出面测试（1.10.0 加法）
+ * s44 · KernelSeam 导出面测试（1.10.0 加法 / 1.11.0 加法：AuthzService+checkCapability 出面）
  *
- * 断言：①src/seam.ts 符号面完整（20 符号）；②dist 构建产物在库根存在时（CI j01 build 后/本地 build），
+ * 断言：①src/seam.ts 符号面完整（21 运行时符号）；②dist 构建产物在库根存在时（CI j01 build 后/本地 build），
  * dist/seam.js 可独立装载且符号一致 + SessionLog 可用（平台层消费形态 = node_modules 内纯 JS，无 type-stripping 依赖）。
  */
 import { test } from 'node:test'
@@ -15,9 +15,10 @@ const SEAM_SYMBOLS = [
   'RuntimeCore', 'createOpenAICompatAdapter', 'createAnthropicAdapter', 'CredentialService',
   'mountPlugin', 'Context', 'loadCarConfig', 'mergeLlmConfig', 'mergeSignatureGate', 'warmCarConfig',
   'probeCapabilities', 'SandboxExecutor', 'createTelemetryFacade', 'telemetryConfigFromEnv', 'TurnTracer',
+  'AuthzService', 'checkCapability',
 ] as const
 
-test('src/seam.ts 导出面完整（19 符号）', async () => {
+test('src/seam.ts 导出面完整（21 运行时符号）', async () => {
   const seam = await import('../src/seam.ts')
   const missing = SEAM_SYMBOLS.filter((n) => (seam as Record<string, unknown>)[n] === undefined)
   assert.deepEqual(missing, [], `缺符号: ${missing.join(',')}`)
