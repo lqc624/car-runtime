@@ -7,6 +7,11 @@
  *  - 语义不变：runTurn/chatStep/SessionLog 即 CLI 与测试承载的同一实现（非转发壳）。
  *
  * 加法登记：1.11.0 —— AuthzService/checkCapability 出面（平台确认桥幂等决策 + 会话策略直判承载；F4 US-3 语义同源）。
+ * 加法登记：1.12.0 —— MCP/PTC 真桥出面（D-20/D-35/D-36：McpGateway + 双 transport 工厂 + resolveMcpHeaders +
+ *   makePtcToolDefinition + renderSdkFromRegistry + 8 类型）。负面清单（不出面）：worker-entry/budget/erasable/
+ *   runCode（PTC 红线单点——erasable-only/预算/授权门仅经 makePtcToolDefinition 行为面可达）、JsonRpc 编码层、
+ *   rawPost/parseTraceparent/formatTraceparent（trace 通道内部件）。jiti epoch 面（D-37）：mountPlugin.reloadEpoch
+ *   自 1.10.0 起已随本面可达，零加法登记确认。
  */
 export { SessionLog, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
 export { SessionFileStore } from './session/store.ts'
@@ -22,3 +27,10 @@ export { probeCapabilities, SandboxExecutor } from './sandbox/sandbox.ts'
 export { AuthzService, checkCapability, type Decision, type AuthzRequest, type AuthzDecision, type DeclaredCapabilities } from './authz/authz.ts'
 export { createTelemetryFacade, telemetryConfigFromEnv } from './runtime-core/telemetry.ts'
 export { TurnTracer, type TurnSpanHandle } from './runtime-core/trace.ts'
+// —— 1.12.0（D-20/D-35/D-36）：MCP/PTC 真桥面 ——
+export { McpGateway, type ClientTransport, type McpServerConfig, type McpToolDefinition } from './mcp/gateway.ts'
+export { createStdioClientTransport, type StdioServerSpec } from './mcp/stdioClient.ts'
+export { createHttpMcpTransport, resolveMcpHeaders, type HttpMcpServerSpec } from './mcp/httpClient.ts'
+export { makePtcToolDefinition, type ToolBridge } from './ptc/runCode.ts'
+export { renderSdkFromRegistry } from './ptc/sdk.ts'
+export type { McpClientSpanHandle, PtcRelayHandle } from './runtime-core/trace.ts'
