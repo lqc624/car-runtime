@@ -10,6 +10,9 @@
  *    turn 内任一 step 撞限 → turn/end 保留 max-tokens，不被后续成功 step 冲销
  *  - 工具收口：concludesTurn=OR（任一 true 即收口）；terminate=AND（整批 finalized 全 true 才中断）
  *  - 取消：未派发调用补记成对事件（toolCall + 合成错误 toolResult），日志无缺口
+ *  - 1.11-S2（D-33 / 计量设计 §3.3）：turnEnd meta.usage = 本 turn usage 事件四分量求和
+ *    （聚合在内核消费侧单点 closeTurn——适配器无状态 ACL；无 usage 事件 → meta 不带 usage 键，
+ *    缺省=未采集向后兼容；撞限/异常 turn 照常聚合，截断前已完成请求的 usage 事实不吞）
  */
 import type { SessionLog } from '../session/log.ts'
 import { CarM8Error } from '../runtime-core/errors.ts'
@@ -58,6 +61,29 @@ export class TurnAborted extends Error {
   constructor() { super('CAR-ABORTED: turn cancelled by user') }
 }
 
+/**
+ * 1.11-S2（D-33 / 计量设计 §3.3）：turn 级 usage 聚合——扫描本 turn 的 'usage' 事件（事实本体
+ * 在 JSONL，聚合由事实行求和而非运行时状态；字段非数值容错跳过不吞计数）。无 usage 事件
+ * 返回 undefined → turnEnd meta 不带 usage 键（缺省=未采集，旧格式向后兼容）。
+ */
+function turnUsageFrom(log: SessionLog, turnId: string): { input: number; output: number; cacheRead: number; cacheCreation: number; requests: number } | undefined {
+  let input = 0
+  let output = 0
+  let cacheRead = 0
+  let cacheCreation = 0
+  let requests = 0
+  for (const e of log.events) {
+    if (e.kind !== 'usage' || e.turnId !== turnId) continue
+    const p = (e.payload ?? {}) as Record<string, unknown>
+    if (typeof p.input === 'number') input += p.input
+    if (typeof p.output === 'number') output += p.output
+    if (typeof p.cacheRead === 'number') cacheRead += p.cacheRead
+    if (typeof p.cacheCreation === 'number') cacheCreation += p.cacheCreation
+    requests++
+  }
+  return requests ? { input, output, cacheRead, cacheCreation, requests } : undefined
+}
+
 export async function runTurn(opts: {
   log: SessionLog
   turnId: string
@@ -71,6 +97,13 @@ export async function runTurn(opts: {
   const trail: Array<{ seq: number; reason: TurnEndReason }> = []
   let sawMaxTokens = false
   let steps = 0
+
+  // 1.11-S2（D-33）：turnEnd 落链单点包装——聚合本 turn usage 事件（无 usage 不带键，
+  // 缺省=未采集向后兼容）；reason 保持 meta 首键，usage 恒为加法尾键
+  const closeTurn = (meta: Record<string, unknown>) => {
+    const usage = turnUsageFrom(log, turnId)
+    return log.append('runtime', 'turnEnd', turnId, null, { ...meta, ...(usage ? { usage } : {}) })
+  }
 
   const executeBatch = async (calls: ToolCall[]): Promise<{ concludesTurn: boolean; concludesAll: boolean; terminateVotes: number; terminateAll: boolean; finalized: number; denies: number }> => {
     let concludesTurn = false
@@ -122,7 +155,7 @@ export async function runTurn(opts: {
   try {
     while (steps < maxSteps) {
       if (signal?.aborted) {
-        const seq = log.append('runtime', 'turnEnd', turnId, null, { reason: 'aborted' }).seq
+        const seq = closeTurn({ reason: 'aborted' }).seq
         trail.push({ seq, reason: 'aborted' })
         return { reason: 'aborted', steps, endReasonTrail: trail }
       }
@@ -131,7 +164,7 @@ export async function runTurn(opts: {
       const step = await model()
 
       if (step.stopReason === 'error') {
-        const seq = log.append('runtime', 'turnEnd', turnId, null, { reason: 'error' }).seq
+        const seq = closeTurn({ reason: 'error' }).seq
         trail.push({ seq, reason: 'error' })
         return { reason: 'error', steps, endReasonTrail: trail }
       }
@@ -151,7 +184,7 @@ export async function runTurn(opts: {
           continue
         }
         // 默认收口：截断响应不解析、不执行任何工具调用
-        const seq = log.append('runtime', 'turnEnd', turnId, null, { reason: 'max-tokens' }).seq
+        const seq = closeTurn({ reason: 'max-tokens' }).seq
         trail.push({ seq, reason: 'max-tokens' })
         return { reason: 'max-tokens', steps, endReasonTrail: trail }
       }
@@ -160,21 +193,21 @@ export async function runTurn(opts: {
         const batch = await executeBatch(step.toolCalls)
         // F13：授权拒绝即收口（blockOnDeny 产出点——blocked 仅新增产出点，枚举不增）
         if (preset.blockOnDeny && batch.denies > 0) {
-          const seq = log.append('runtime', 'turnEnd', turnId, null, { reason: 'blocked', denies: batch.denies }).seq
+          const seq = closeTurn({ reason: 'blocked', denies: batch.denies }).seq
           trail.push({ seq, reason: 'blocked' })
           return { reason: 'blocked', steps, endReasonTrail: trail }
         }
         const agg = preset.aggregate ?? {}
         const abortedNow = (agg.terminate ?? 'all') === 'any' ? batch.terminateVotes > 0 : batch.terminateAll
         if (abortedNow) { // terminate 收口：默认 AND（整批），可配置 any
-          const seq = log.append('runtime', 'turnEnd', turnId, null, { reason: 'aborted' }).seq
+          const seq = closeTurn({ reason: 'aborted' }).seq
           trail.push({ seq, reason: 'aborted' })
           return { reason: 'aborted', steps, endReasonTrail: trail }
         }
         const concludedNow = (agg.concludesTurn ?? 'any') === 'any' ? batch.concludesTurn : batch.concludesAll && batch.finalized > 0
         if (concludedNow) { // concludesTurn 收口：默认 OR，可配置 all
           const reason: TurnEndReason = sawMaxTokens ? 'max-tokens' : 'completed'
-          const seq = log.append('runtime', 'turnEnd', turnId, null, { reason }).seq
+          const seq = closeTurn({ reason }).seq
           trail.push({ seq, reason })
           return { reason, steps, endReasonTrail: trail }
         }
@@ -184,16 +217,16 @@ export async function runTurn(opts: {
 
       // stopReason === 'stop'：模型自然完成
       const reason: TurnEndReason = sawMaxTokens ? 'max-tokens' : 'completed'
-      const seq = log.append('runtime', 'turnEnd', turnId, null, { reason }).seq
+      const seq = closeTurn({ reason }).seq
       trail.push({ seq, reason })
       return { reason, steps, endReasonTrail: trail }
     }
-    const seq = log.append('runtime', 'turnEnd', turnId, null, { reason: 'error', detail: 'max-steps' }).seq
+    const seq = closeTurn({ reason: 'error', detail: 'max-steps' }).seq
     trail.push({ seq, reason: 'error' })
     return { reason: 'error', steps, endReasonTrail: trail }
   } catch (e) {
     if (e instanceof TurnAborted) {
-      const seq = log.append('runtime', 'turnEnd', turnId, null, { reason: 'aborted' }).seq
+      const seq = closeTurn({ reason: 'aborted' }).seq
       trail.push({ seq, reason: 'aborted' })
       return { reason: 'aborted', steps, endReasonTrail: trail }
     }
@@ -201,7 +234,7 @@ export async function runTurn(opts: {
     // car doctor」可达用户；非 CarM8Error 维持 String(e) 口径不变）
     const m8 = e instanceof CarM8Error
     const detail = m8 ? `${e.slug}: ${e.message}` : String(e)
-    const seq = log.append('runtime', 'turnEnd', turnId, null, {
+    const seq = closeTurn({
       reason: 'error', detail,
       ...(m8 ? { code: e.code, userHint: e.userHint, retryable: e.retryable } : {}),
     }).seq

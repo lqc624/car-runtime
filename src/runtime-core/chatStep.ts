@@ -12,12 +12,15 @@
  *     （半截 JSON 不解析——ADR-001 同纪律，length 时只交 truncatedTools）；
  *  5. assistant 文本事件落 M7（脱敏后 + secretsRedacted 计数留痕 meta）；
  *  6. finishReason 不可变透传为 ModelStep.stopReason（error/aborted → 'error'，BD-04 收口
- *     由 runTurn 落 turnEnd）；工具调用事件由 runTurn executeBatch 落（本层不重复）。
+ *     由 runTurn 落 turnEnd）；工具调用事件由 runTurn executeBatch 落（本层不重复）；
+ *  7. 1.11-S2（D-33 / 计量设计 §3.3）：流尾 usage chunk → 'runtime'/'usage' 请求级事实落链
+ *     （缺失 = provider 未回/流中断/畸形，禁补造；actor='runtime'、model_visible=0 不进模型
+ *     消息流）——turn 级聚合在 stop.ts 收口单点，本层不做跨请求状态。
  */
 import type { SessionLog } from '../session/log.ts'
 import { TurnAborted, type ModelStep, type ToolCall } from '../loop/stop.ts'
 import type { RuntimeCore } from './llm.ts'
-import type { ToolDefinition } from './types.ts'
+import type { LlmUsage, ToolDefinition } from './types.ts'
 import { StreamRedactor } from './redaction.ts'
 import { scanSecrets } from '../security/secrets.ts'
 import { providerUnreachable } from './errors.ts'
@@ -67,6 +70,7 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
   const calls = new Map<number, { id?: string; name?: string; argsBuf: string }>()
   let stopReason: ModelStep['stopReason'] | undefined
   let errorDetail: string | undefined
+  let usage: LlmUsage | undefined
 
   const stream = core.chat({
     model,
@@ -90,6 +94,7 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
       calls.set(idx, cur)
     }
     if (chunk.error) errorDetail = chunk.error.message
+    if (chunk.usage) usage = chunk.usage // D-33：附着于最后一个 chunk——后到覆盖
     if (chunk.finishReason !== undefined) stopReason = chunk.finishReason === 'aborted' ? 'error' : chunk.finishReason
   }
   // 1.4-S4（D-19）：finish 检查前先查取消（适配器取消路径静默收口无 finishReason——
@@ -100,6 +105,21 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
     throw new Error('CAR-E-LLM-FINISH: 流结束无 finishReason（适配器契约违规）')
   }
   text += redactor.flush()
+
+  // 1.11-S2（D-33 / 计量设计 §3.3）：请求级 usage 事实落链（拿到 usage 的最后一个 chunk 即请求
+  // 收尾；撞限/异常 turn 照常落——截断前已完成请求的 usage 事实不吞）。缺失 = provider 未回，
+  // 禁补造；actor='runtime'、不进模型消息流（deriveMessages 不投影 usage，§2.5 红线）
+  if (usage) {
+    log.append('runtime', 'usage', turnId, {
+      model: usage.model,
+      adapterId: usage.adapterId,
+      input: usage.inputTokens,
+      output: usage.outputTokens,
+      cacheRead: usage.cacheReadTokens,
+      cacheCreation: usage.cacheCreationTokens,
+      providerRaw: usage.providerRaw,
+    })
+  }
 
   // 5. assistant 文本落 M7（脱敏后 + 计数留痕；空文本不产事件）
   //    flush 后兜底复扫只计数不复写：流式遮蔽已生效，>0 即流式边界逃逸的审计信号

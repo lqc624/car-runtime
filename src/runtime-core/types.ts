@@ -36,14 +36,35 @@ export interface ToolCallDelta {
   argumentsDelta?: string
 }
 
+/**
+ * 1.11-S1（D-33 / 计量设计 §3.1）：token 四分量归一化用量——跨 provider 可加总的库内口径
+ * （§1.1：openai prompt_tokens 含 cached 必须减法归一；anthropic input_tokens 天然不含 cache）。
+ * provider 原始 usage 整体存 providerRaw 供审计对拍（对拍恒以 provider_raw 为准）。
+ */
+export interface LlmUsage {
+  /** 非缓存输入 token（归一化后） */
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  /** openai 系无对应字段，恒 0（登记不估算） */
+  cacheCreationTokens: number
+  /** 实际请求模型（req.model） */
+  model: string
+  adapterId: string
+  /** provider 原始 usage 对象（anthropic 为 messageStart/messageDelta 两原始片段） */
+  providerRaw: unknown
+}
+
 /** 流式块（finishReason 一经产生不可被任何中间层改写） */
 export interface LlmChunk {
   delta?: string
   toolCallDelta?: ToolCallDelta
   finishReason?: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted'
-  // —— 规格外加法扩展（登记：M8 收口文档 §4）——
+  // —— 规格外加法扩展（登记：M8 收口文档 §4 / 计量设计 §3.1，1.11.0）——
   /** finishReason='error' 时的结构化原因（消费方落 turnEnd meta，不进模型消息流） */
   error?: { code: string; message: string }
+  /** 1.11-S1（D-33）：每次请求最后一个 chunk 附带归一化用量；缺失 = provider 未回，禁补造 */
+  usage?: LlmUsage
 }
 
 /** Provider 适配器（ACL，C-02）：统一签名，消解 Provider 差异 */

@@ -20,10 +20,15 @@
  *    0xC0000409）——car run 真路径 ≥3 次模型请求 + PTC worker/MCP 子进程并存即确定性复现
  *    （1.4 彼时仅修遥测出站，LLM 出站同为 undici 默认——潜伏至 1.8 E2E 三请求形态暴露）；
  *    流式契约 body = AsyncIterable<Uint8Array> 不变；测试注入缝 fetchImpl 保留。
+ *  - 1.11-S1（D-33 / 计量设计 §3.2）：usage 采集——openai 请求体加 stream_options.include_usage
+ *    （默认开启，第三方网关不兼容时回退 = baseUrl 白名单，登记可回退项；缺失走缺失口径禁估算），
+ *    解析「先摘 evt.usage 再判 choice」（空 choices 尾包不再被吞）；anthropic message_start（input 侧）
+ *    + message_delta（output 侧）两包合并（message_delta 缺席 = output 不完整，整条不落）；
+ *    归一口径 §1.1（openai 减法 / anthropic 透传 + cache_creation），畸形/缺失整条不落（禁补造）。
  */
 import { CarM8Error, providerUnreachable } from './errors.ts'
 import { CredentialService } from './credentials.ts'
-import type { Disposable, LlmAdapter, LlmChunk, LlmRequest, ToolCallDelta } from './types.ts'
+import type { Disposable, LlmAdapter, LlmChunk, LlmRequest, LlmUsage, ToolCallDelta } from './types.ts'
 import type { PluginContext } from '../kernel/context.ts'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
@@ -279,8 +284,30 @@ const FINISH_MAP: Record<string, LlmChunk['finishReason']> = {
 
 class Retryable extends Error {}
 
-/** 明文 SSE → LlmChunk 流解析（增量容错：半行驻留到下一 chunk） */
-async function* parseSseStream(body: AsyncIterable<Uint8Array>): AsyncIterable<LlmChunk> {
+/**
+ * 1.11-S1（D-33 / 计量设计 §1.1）：openai usage 归一——prompt_tokens 含 cached，inputTokens
+ * 必须做减法（prompt − prompt_tokens_details.cached_tokens）；cache_creation 恒 0（无对应字段，
+ * 登记不估算）。usage 对象缺席/畸形（两侧主字段任一非数值）= 整条不落（缺失口径，禁补造）。
+ */
+function normalizeOpenAIUsage(u: unknown, model: string, adapterId: string): LlmUsage | undefined {
+  if (!u || typeof u !== 'object') return undefined
+  const r = u as Record<string, unknown>
+  if (typeof r.prompt_tokens !== 'number' || typeof r.completion_tokens !== 'number') return undefined
+  const details = (r.prompt_tokens_details ?? null) as Record<string, unknown> | null
+  const cached = details && typeof details.cached_tokens === 'number' ? details.cached_tokens : 0
+  return {
+    inputTokens: r.prompt_tokens - cached,
+    outputTokens: r.completion_tokens,
+    cacheReadTokens: cached,
+    cacheCreationTokens: 0,
+    model,
+    adapterId,
+    providerRaw: u,
+  }
+}
+
+/** 明文 SSE → LlmChunk 流解析（增量容错：半行驻留到下一 chunk；1.11-S1：model/adapterId 供 usage 归一） */
+async function* parseSseStream(body: AsyncIterable<Uint8Array>, model: string, adapterId: string): AsyncIterable<LlmChunk> {
   const decoder = new TextDecoder()
   let buf = ''
   for await (const bytes of body) {
@@ -295,8 +322,15 @@ async function* parseSseStream(body: AsyncIterable<Uint8Array>): AsyncIterable<L
       if (!data) continue
       let evt: any
       try { evt = JSON.parse(data) } catch { continue } // 心跳/注释行容错（显式跳过非 JSON data）
+      // 1.11-S1（D-33 / 计量设计 §3.2 必核行）：先摘 usage 再判 choice——stream_options.include_usage
+      // 的尾包 choices 为空，下方 `if (!choice) continue` 原样会把它吞掉
+      const usage = evt.usage !== undefined ? normalizeOpenAIUsage(evt.usage, model, adapterId) : undefined
       const choice = evt.choices?.[0]
-      if (!choice) continue
+      if (!choice) {
+        // 独立 usage 尾包（官方形态：finish_reason chunk 之后、[DONE] 之前）——请求最后一个 chunk
+        if (usage) yield { usage }
+        continue
+      }
       const delta = choice.delta ?? {}
       const raw = choice.finish_reason
       const finish: LlmChunk['finishReason'] | undefined = raw == null ? undefined : (() => {
@@ -315,26 +349,34 @@ async function* parseSseStream(body: AsyncIterable<Uint8Array>): AsyncIterable<L
         : []
       const text = typeof delta.content === 'string' && delta.content.length ? delta.content : undefined
       // LlmChunk 单 toolCallDelta 口径：同事件多条 tool_calls 顺序展开为多 chunk
-      if (!text && !toolCallDeltas.length && finish === undefined) continue
+      if (!text && !toolCallDeltas.length && finish === undefined) {
+        // 空事件但携 usage（部分 compat 网关形态）：usage 不随空事件丢失
+        if (usage) yield { usage }
+        continue
+      }
+      const chunks: LlmChunk[] = []
       if (toolCallDeltas.length === 0) {
-        yield {
+        chunks.push({
           ...(text !== undefined ? { delta: text } : {}),
           ...(finish !== undefined
             ? { finishReason: finish, ...(finish === 'error' ? { error: { code: 'B080001', message: `未映射的 finish_reason "${raw}"` } } : {}) }
             : {}),
-        }
+        })
       } else {
         for (let i = 0; i < toolCallDeltas.length; i++) {
           const last = i === toolCallDeltas.length - 1
-          yield {
+          chunks.push({
             ...(i === 0 && text !== undefined ? { delta: text } : {}),
             toolCallDelta: toolCallDeltas[i],
             ...(last && finish !== undefined
               ? { finishReason: finish, ...(finish === 'error' ? { error: { code: 'B080001', message: `未映射的 finish_reason "${raw}"` } } : {}) }
               : {}),
-          }
+          })
         }
       }
+      // 1.11-S1（D-33）：usage 与事件内容同 chunk 到达（网关共存形态）→ 附着于本事件最后一个 chunk
+      if (usage) chunks[chunks.length - 1]!.usage = usage
+      for (const c of chunks) yield c
     }
   }
 }
@@ -364,6 +406,9 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
     body: JSON.stringify({
       model: req.model,
       stream: true,
+      // 1.11-S1（D-33 / 计量设计 §9-2 推荐A）：usage 采集默认开启；第三方网关不兼容时的
+      // 回退方案（baseUrl 白名单）登记可回退项——不支持网关走缺失口径（禁估算补造）
+      stream_options: { include_usage: true },
       ...(req.maxTokens != null ? { max_tokens: req.maxTokens } : {}),
       messages: req.messages.map(m => {
         if (m.role === 'toolResult') {
@@ -402,7 +447,7 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
         fetchImpl,
         signal: req.signal,
         timeoutMs, firstByteMs, retries, backoffMs, sleep,
-      }, parseSseStream)
+      }, (body) => parseSseStream(body, req.model, id))
     },
   }
 }
@@ -434,6 +479,31 @@ const ANTHROPIC_STOP_REASON_MAP: Record<string, LlmChunk['finishReason']> = {
   max_tokens: 'length',
   tool_use: 'toolUse',
   refusal: 'aborted',
+}
+
+/**
+ * 1.11-S1（D-33 / 计量设计 §3.2）：anthropic usage 两包合并——message_start（input 侧：
+ * input_tokens 天然不含 cache + cache_read/cache_creation）+ message_delta（output 侧：
+ * output_tokens）。任一包缺席或主字段非数值 = 侧不完整，整条不落（缺失口径，禁补造半条事实）；
+ * providerRaw 保留两原始片段供审计对拍。
+ */
+function mergeAnthropicUsage(
+  start: Record<string, unknown> | null,
+  delta: Record<string, unknown> | null,
+  model: string,
+  adapterId: string,
+): LlmUsage | undefined {
+  if (!start || !delta) return undefined
+  if (typeof start.input_tokens !== 'number' || typeof delta.output_tokens !== 'number') return undefined
+  return {
+    inputTokens: start.input_tokens,
+    outputTokens: delta.output_tokens,
+    cacheReadTokens: typeof start.cache_read_input_tokens === 'number' ? start.cache_read_input_tokens : 0,
+    cacheCreationTokens: typeof start.cache_creation_input_tokens === 'number' ? start.cache_creation_input_tokens : 0,
+    model,
+    adapterId,
+    providerRaw: { messageStart: start, messageDelta: delta },
+  }
 }
 
 /**
@@ -499,10 +569,13 @@ function toAnthropic(req: LlmRequest, apiKey: string) {
  * Anthropic SSE → LlmChunk 流解析（data-only：data JSON 自带 `type` 字段，`event:` 行不依赖）。
  * content_block_start(tool_use) → toolCallDelta{id,name}；input_json_delta → toolCallDelta{argumentsDelta}；
  * message_delta.stop_reason → finishReason（终态信号，单次）；ping/message_stop/未知事件容错跳过。
+ * 1.11-S1（D-33）：message_start.usage 采集 input 侧（原解析整体跳过该事件）+ message_delta.usage
+ * 合并 output 侧附着于终态 chunk；流中断 delta 未到 = output 侧不完整，整条不落（R-2）。
  */
-async function* parseAnthropicSseStream(body: AsyncIterable<Uint8Array>): AsyncIterable<LlmChunk> {
+async function* parseAnthropicSseStream(body: AsyncIterable<Uint8Array>, model: string, adapterId: string): AsyncIterable<LlmChunk> {
   const decoder = new TextDecoder()
   let buf = ''
+  let startUsage: Record<string, unknown> | null = null
   for await (const bytes of body) {
     buf += decoder.decode(bytes, { stream: true })
     let nl: number
@@ -528,13 +601,23 @@ async function* parseAnthropicSseStream(body: AsyncIterable<Uint8Array>): AsyncI
           yield { toolCallDelta: { index: evt.index, argumentsDelta: d.partial_json } }
         }
         // thinking_delta / citations_delta 等非 CAR 消费面：容错跳过
+      } else if (type === 'message_start') {
+        // 1.11-S1（D-33）：input 侧采集（usage 嵌套在 message 下）
+        const u = (evt.message as Record<string, unknown> | undefined)?.usage
+        if (u && typeof u === 'object') startUsage = u as Record<string, unknown>
       } else if (type === 'message_delta') {
         const raw = evt.delta?.stop_reason
+        // 1.11-S1（D-33）：output 侧（delta.usage.output_tokens）与 input 侧合并——两包齐才落
+        const usage = mergeAnthropicUsage(startUsage, (evt.usage ?? null) as Record<string, unknown> | null, model, adapterId)
         if (raw != null) {
           const finish = ANTHROPIC_STOP_REASON_MAP[String(raw)]
-          yield finish
+          const chunk: LlmChunk = finish
             ? { finishReason: finish }
             : { finishReason: 'error', error: { code: 'B080001', message: `未映射的 stop_reason "${raw}"` } }
+          yield usage ? { ...chunk, usage } : chunk
+        } else if (usage) {
+          // delta 未携 stop_reason 但携 usage（网关形态）：usage 不随缺失终态信号丢失
+          yield { usage }
         }
       } else if (type === 'error') {
         // 流内 error 事件（overloaded_error 等）→ error chunk 收口（后续 message_delta 由守卫拦冲突）
@@ -575,7 +658,7 @@ export function createAnthropicAdapter(opts: AnthropicAdapterOptions): LlmAdapte
         fetchImpl,
         signal: req.signal,
         timeoutMs, firstByteMs, retries, backoffMs, sleep,
-      }, parseAnthropicSseStream)
+      }, (body) => parseAnthropicSseStream(body, req.model, id))
     },
   }
 }
