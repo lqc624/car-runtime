@@ -48,6 +48,12 @@ export interface TurnPreset {
   mode?: 'readonly' | 'confirm' | 'full'
   /** 确认模式审批回调：返回 true 放行 */
   authorize?: (call: ToolCall) => Promise<boolean>
+  /**
+   * 1.13.0（K-FS-1）：authorizeAll=true 将 confirm 模式的授权门扩展到 readonly 类工具
+   * （文件安全规则轴的读取面——读取的询问/拒绝规则可达）；缺省 false = 既有行为零变化
+   * （readonly 模式契约不变：写类一律拒、只读类照常放行；full 整体旁路）。
+   */
+  authorizeAll?: boolean
   maxSteps?: number
   /** F13：OR/AND 收口可配置（默认 any/all = M1 行为等价） */
   aggregate?: { concludesTurn?: 'any' | 'all'; terminate?: 'any' | 'all' }
@@ -124,8 +130,11 @@ export async function runTurn(opts: {
         log.append('plugin', 'toolResult', turnId, { id: call.id, error: `unknown tool "${call.tool}"` })
         continue
       }
-      // 权限门（F4 集成点）：write 类在 readonly/confirm 模式需放行
-      if (def.declaredSideEffect === 'write' && preset.mode !== 'full') {
+      // 权限门（F4 集成点）：write 类在 readonly/confirm 模式需放行；1.13.0（K-FS-1）：
+      // authorizeAll=true 且 confirm 时 readonly 类同门（规则轴读取面），readonly 模式契约不变
+      const gated = preset.mode !== 'full' &&
+        (def.declaredSideEffect === 'write' || (preset.authorizeAll === true && preset.mode === 'confirm'))
+      if (gated) {
         const granted = preset.mode === 'confirm' ? await (preset.authorize?.(call) ?? Promise.resolve(false)) : false
         log.append('runtime', 'toolResult', turnId, { id: call.id, error: 'authorization-denied', granted, mode: preset.mode })
         if (!granted) { denies++; continue }

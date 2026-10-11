@@ -14,7 +14,9 @@
 import { spawn } from 'node:child_process'
 
 export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'
-export type Capability = 'fs-write' | 'net' | 'exec' | 'mcp' | 'env-read'
+// 1.13.0（K-FS-3）：加法 'fs-read' | 'fs-delete'——文件安全三轴的审计对象保真（能力×资源）；
+// 分类纪律：fs-delete 为写类（变更面，降级态 Q-04 强制 confirm），fs-read 为只读类（五枚举既有语义不动）
+export type Capability = 'fs-write' | 'net' | 'exec' | 'mcp' | 'env-read' | 'fs-read' | 'fs-delete'
 
 export interface ProbeResult {
   platform: NodeJS.Platform
@@ -64,10 +66,21 @@ export interface ExecRequest {
   /** 运行权限模式（F4）：readonly/confirm/full——降级态下 full 亦受限为 confirm */
   permissionMode: 'readonly' | 'confirm' | 'full'
   authorize?: (req: ExecRequest) => Promise<boolean>
+  /**
+   * 1.13.0（K-SC-1）：authorizeAll=true 将 confirm 模式的授权门扩展到非写类 argv
+   * （文件/命令规则轴的只读命令面——询问/拒绝规则可达）；缺省 false = 既有行为零变化
+   * （readonly 模式契约不变：写类一律拒、只读类照常放行；full 整体旁路）。
+   */
+  authorizeAll?: boolean
   timeoutMs?: number
 }
 
 export interface ExecResult { ok: boolean; stdout: string; stderr: string; code: number | null; degraded: boolean; denied?: string }
+
+/** 写类能力判定（1.13.0 收敛单点）：fs-delete 为变更面归写类；fs-read 为只读类不归（K-FS-3 分类纪律） */
+function isWriteish(c: Capability): boolean {
+  return c === 'fs-write' || c === 'net' || c === 'exec' || c === 'mcp' || c === 'fs-delete'
+}
 
 /**
  * M2-S7 · Seatbelt profile 生成器（darwin 后端）
@@ -140,7 +153,7 @@ export class SandboxExecutor {
   /** Q-04 定稿：降级态运行约束判定（在授权门之前生效） */
   effectivePermission(permissionMode: ExecRequest['permissionMode'], capabilities: Capability[]): { mode: 'readonly' | 'confirm' | 'full'; denied: string | null } {
     if (!this.degraded) return { mode: permissionMode, denied: null }
-    const writeish = capabilities.some(c => c === 'fs-write' || c === 'net' || c === 'exec' || c === 'mcp')
+    const writeish = capabilities.some(c => isWriteish(c))
     if (capabilities.includes('env-read')) return { mode: 'confirm', denied: 'env-read denied in degraded sandbox（Q-04：一律拒绝）' }
     if (writeish) return { mode: 'confirm', denied: null } // full 亦受限为 confirm
     return { mode: permissionMode === 'full' ? 'confirm' : permissionMode, denied: null }
@@ -153,9 +166,11 @@ export class SandboxExecutor {
       this.#audit({ kind: 'sandbox-denied', detail: { argv: req.argv, reason: degradedDenial, degraded: true }, ts: Date.now() })
       return { ok: false, stdout: '', stderr: degradedDenial, code: -1, degraded: true, denied: degradedDenial }
     }
-    // 权限门：写类能力在 readonly 一律拒；confirm 需审批（降级态强制 confirm）
-    const writeish = req.capabilities.some(c => c === 'fs-write' || c === 'net' || c === 'exec' || c === 'mcp')
-    if (writeish && effMode !== 'full') {
+    // 权限门：写类能力在 readonly 一律拒；confirm 需审批（降级态强制 confirm）。
+    // 1.13.0（K-SC-1）：authorizeAll=true 且 confirm 时非写类 argv 同样进门（命令规则轴只读面）
+    const writeish = req.capabilities.some(c => isWriteish(c))
+    const gated = effMode !== 'full' && (writeish || (req.authorizeAll === true && effMode === 'confirm'))
+    if (gated) {
       const granted = effMode === 'confirm' ? await (req.authorize?.(req) ?? Promise.resolve(false)) : false
       if (!granted) {
         this.#audit({ kind: 'sandbox-denied', detail: { argv: req.argv, mode: effMode, degraded: this.degraded }, ts: Date.now() })

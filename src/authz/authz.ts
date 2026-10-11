@@ -73,6 +73,22 @@ export class AuthzService {
     })
   }
 
+  /**
+   * 规则直判（1.13.0 K-FS-2）：文件/命令/网络规则轴命中后的 policy 双向直判——宿主规则引擎
+   * （允许/拒绝档）在授权门内直决，reason 必须携带规则标识（审计可回答「为什么没问人」）。
+   * 幂等键同现行（同 authorizationId 返回同一决策）；EventKind 冻结面零新增（复用 #commit 形态）。
+   */
+  decideByRule(req: AuthzRequest, rule: { decision: 'APPROVED' | 'DENIED'; reason: string }): AuthzDecision {
+    return this.#commit({
+      authorizationId: req.authorizationId,
+      decision: rule.decision,
+      decidedBy: 'policy',
+      reason: rule.reason,
+      degraded: this.#degraded,
+      ts: Date.now(),
+    })
+  }
+
   /** 人审（confirm 模式）：120s 超时默认拒绝（timeout-default-deny） */
   async decideByUser(req: AuthzRequest, approve: (req: AuthzRequest) => Promise<boolean>): Promise<AuthzDecision> {
     const cached = this.#decisions.get(req.authorizationId)

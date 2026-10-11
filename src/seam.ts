@@ -12,8 +12,13 @@
  *   runCode（PTC 红线单点——erasable-only/预算/授权门仅经 makePtcToolDefinition 行为面可达）、JsonRpc 编码层、
  *   rawPost/parseTraceparent/formatTraceparent（trace 通道内部件）。jiti epoch 面（D-37）：mountPlugin.reloadEpoch
  *   自 1.10.0 起已随本面可达，零加法登记确认。
+ * 加法登记：1.13.0 —— 桌面 S3 治理面（文件安全设计 §7 / S3 迭代规划 D-S3-1）：K-FS-4 redact 出面（fs_read 落链前
+ *   脱敏——链上不得进密钥原文）+ K-S3-1 loadSessionLog/deriveSessionId 出面（审计页历史会话链校验/取证导出的
+ *   只读载入面；载入/校验单一权威在内核，桌面禁自实现哈希重算）+ K-S3-3 exportForensicsBundle/verifyBundle 出面
+ *   （取证包导出 + 读回重验；断链即中止语义随本面）。恢复面 K-S3-2 零登记确认：SessionLog.fromEvents 自 M5 DEC-4
+ *   起已随本面可达（fork.ts 生产调用点），S2 D-S2-6 前提修正登记（S3 执行期发现）。
  */
-export { SessionLog, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
+export { SessionLog, loadSessionLog, deriveSessionId, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
 export { SessionFileStore } from './session/store.ts'
 export { runTurn, type TurnEndReason, type TurnPreset, type TurnResult } from './loop/stop.ts'
 export { chatStep } from './runtime-core/chatStep.ts'
@@ -34,3 +39,6 @@ export { createHttpMcpTransport, resolveMcpHeaders, type HttpMcpServerSpec } fro
 export { makePtcToolDefinition, type ToolBridge } from './ptc/runCode.ts'
 export { renderSdkFromRegistry } from './ptc/sdk.ts'
 export type { McpClientSpanHandle, PtcRelayHandle } from './runtime-core/trace.ts'
+// —— 1.13.0：桌面 S3 治理面（文件安全/审计/取证）——
+export { redact, type RedactionResult } from './runtime-core/redaction.ts'
+export { exportForensicsBundle, verifyBundle, type ForensicsBundle, type ExportMeta } from './session/export.ts'
