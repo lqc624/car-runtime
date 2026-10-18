@@ -35,12 +35,23 @@ export interface SandboxSigConfig {
   sigTrustRoot?: string
 }
 
+export interface CompactionConfig {
+  /** 缺省 false = 行为零变化（1.13 兼容线） */
+  enabled?: boolean
+  /** 距上次压缩的新增事件数阈值（事实计数非估算）；缺省 200 */
+  thresholdEvents?: number
+  /** 保护最近 N 个 turn 不折叠；缺省 4 */
+  protectLastTurns?: number
+}
+
 export interface LlmConfig {
   baseUrl?: string
   model?: string
   adapterId?: string
   maxTokens?: number
   allowEnvFallback?: boolean
+  /** 1.14-S2（K-MP-2 / D-40）：历史压缩策略（阈值自动触发判定入参；立即压缩 API 独立可用） */
+  compaction?: CompactionConfig
 }
 
 export interface McpServerSpec {
@@ -118,6 +129,14 @@ const rawSchema = z.object({
       .refine(v => Number.isFinite(v) && Number.isInteger(v) && v > 0, { message: '必须为正整数' })
       .optional(),
     allowEnvFallback: z.boolean({ invalid_type_error: '必须为布尔', required_error: '必须为布尔' }).optional(),
+    // 1.14-S2（K-MP-2 / D-40）：历史压缩策略（阈值事实计数，非 token 估算）
+    compaction: z.object({
+      enabled: z.boolean({ invalid_type_error: '必须为布尔', required_error: '必须为布尔' }).optional(),
+      thresholdEvents: z.number({ invalid_type_error: '必须为正整数', required_error: '必须为正整数' })
+        .refine(v => Number.isInteger(v) && v > 0, { message: '必须为正整数' }).optional(),
+      protectLastTurns: z.number({ invalid_type_error: '必须为正整数', required_error: '必须为正整数' })
+        .refine(v => Number.isInteger(v) && v > 0, { message: '必须为正整数' }).optional(),
+    }).strict().optional(),
   }).strict().optional(),
   mcp: z.object({
     servers: z.record(z.string(), mcpServerSchema, { invalid_type_error: '必须为对象（serverId → 启动规格）' }),
@@ -161,6 +180,13 @@ function parseCarConfig(raw: unknown): { config: CarConfig; error?: string } {
     if (d.llm.adapterId !== undefined) llm.adapterId = d.llm.adapterId
     if (d.llm.maxTokens !== undefined) llm.maxTokens = d.llm.maxTokens
     if (d.llm.allowEnvFallback !== undefined) llm.allowEnvFallback = d.llm.allowEnvFallback
+    if (d.llm.compaction) {
+      const cp: CompactionConfig = {}
+      if (d.llm.compaction.enabled !== undefined) cp.enabled = d.llm.compaction.enabled
+      if (d.llm.compaction.thresholdEvents !== undefined) cp.thresholdEvents = d.llm.compaction.thresholdEvents
+      if (d.llm.compaction.protectLastTurns !== undefined) cp.protectLastTurns = d.llm.compaction.protectLastTurns
+      llm.compaction = cp
+    }
     out.llm = llm
   }
   if (d.mcp) {

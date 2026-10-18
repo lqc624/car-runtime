@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { decodeLogBuffer, splitJsonlLines } from './format.ts'
 
-export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' | 'fork' | 'system' | 'usage' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；M5-DEC4 加法扩展：跨宿主 fork 标记事件；1.4-S2 加法扩展：system prompt 落链（§3.5.5：新模型可见输入 = 新事件类型）；1.11-S2 加法扩展：usage 计量事实（D-33，actor='runtime'、model_visible=0 不进模型消息流，deriveMessages 不投影）；六值 TurnEndReason 不变
+export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' | 'fork' | 'system' | 'usage' | 'compact' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；M5-DEC4 加法扩展：跨宿主 fork 标记事件；1.4-S2 加法扩展：system prompt 落链（§3.5.5：新模型可见输入 = 新事件类型）；1.11-S2 加法扩展：usage 计量事实（D-33，actor='runtime'、model_visible=0 不进模型消息流，deriveMessages 不投影）；六值 TurnEndReason 不变；1.14-S2 加法扩展（K-MP-2 / D-40）：历史压缩事件（actor='runtime'，append-only 只追加——payload={summary, compactedUpTo, ...}，投影按 compactedUpTo 前缀折叠为摘要，原事件链不改写）
 export type Actor = 'user' | 'model' | 'plugin' | 'runtime'
 export interface SessionEvent {
   seq: number
@@ -91,17 +91,33 @@ export class SessionLog {
    * 模型可见流只保留最终结果（真实 provider 对重复 tool_call_id/tool_use_id 拒绝或未定义，
    * 1.4 观察项经真实适配器落地升级为缺陷面）。id 缺席不收敛（hostRaw/无 id 载荷形态不变，
    * golden ④ 投影语义兼容）；授权拒绝单条即唯一结果原样保留。适配器侧零改动（消费已收敛上游）。
+   * 1.14-S2（K-MP-2 / D-40）：compact 事件投影——scoped 内最后一条 compact 生效（last-wins），
+   * 其 compactedUpTo 前缀折叠为单条 system 摘要（事件原文不改写，仅投影层折叠）；compact 之前的
+   * 请求快照（atSeq ≤ compact.seq）不含 compact 事件 → 投影仍为全量形态（N1 不变量自洽——
+   * 「请求时发出 = 日志前缀投影」逐快照成立）；无 compact 事件的日志投影与 1.13 逐字节一致。
    */
   deriveMessages(upTo?: number): Array<{ role: string; [k: string]: unknown }> {
     const scoped = upTo !== undefined ? this.events.slice(0, upTo) : this.events
+    let compactEvent: SessionEvent | undefined
+    for (const e of scoped) { if (e.kind === 'compact') compactEvent = e } // last-wins
+    let compactedUpTo: number | undefined
+    if (compactEvent) {
+      const cp = (compactEvent.payload ?? {}) as { summary?: unknown; compactedUpTo?: unknown }
+      if (typeof cp.summary !== 'string' || !cp.summary.length || typeof cp.compactedUpTo !== 'number') {
+        throw new Error(`CAR-E-COMPACT-PAYLOAD: compact 事件 seq=${compactEvent.seq} 缺有效 summary/compactedUpTo（投影拒绝——fail-visible）`)
+      }
+      compactedUpTo = cp.compactedUpTo // 折叠边界 = payload 声明的前缀边界（非 compact 事件自身 seq）
+    }
+    const projected = compactedUpTo !== undefined ? scoped.filter(e => e.seq >= compactedUpTo!) : scoped
     const lastSeqById = new Map<string, number>()
-    for (const e of scoped) {
+    for (const e of projected) {
       if (e.kind !== 'toolResult') continue
       const id = (e.payload as { id?: unknown } | null)?.id
       if (typeof id === 'string') lastSeqById.set(id, e.seq)
     }
     const out: Array<{ role: string; [k: string]: unknown }> = []
-    for (const e of scoped) {
+    if (compactEvent) out.push({ role: 'system', content: ((compactEvent.payload as { summary: string }).summary) })
+    for (const e of projected) {
       if (e.kind === 'system') out.push({ role: 'system', content: e.payload })
       else if (e.kind === 'user') out.push({ role: 'user', content: e.payload })
       else if (e.kind === 'assistant') out.push({ role: 'assistant', content: e.payload })
