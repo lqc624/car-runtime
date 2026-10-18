@@ -17,6 +17,11 @@
  *   只读载入面；载入/校验单一权威在内核，桌面禁自实现哈希重算）+ K-S3-3 exportForensicsBundle/verifyBundle 出面
  *   （取证包导出 + 读回重验；断链即中止语义随本面）。恢复面 K-S3-2 零登记确认：SessionLog.fromEvents 自 M5 DEC-4
  *   起已随本面可达（fork.ts 生产调用点），S2 D-S2-6 前提修正登记（S3 执行期发现）。
+ * 加法登记：1.14.0 —— PluginManager 装载报告面（K-S4-1 / D-43）：loadPlugins 出面（六阶段流水线
+ *   discover/verify/parse/validate/topo/register——LoadReportVO 结构化 VO，verify/topo 真值取代 v0.1 桌面
+ *   mountPlugin 组合呈现的 SKIPPED 标注）+ ReloadManager 出面（热重载 epoch 击穿 + invalidate 语义随本面）+
+ *   verifyPluginFile 出面（签名校验挂载点——宿主自有装载路径可复用同一签名门；minisign 轨唯一实装，sigstore
+ *   主轨维持 verifier 骨架期预留——D-43 裁决：登记 strict 期限不引入 sigstore 依赖，engines 硬不兼容见评估报告）。
  */
 export { SessionLog, loadSessionLog, deriveSessionId, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
 export { SessionFileStore } from './session/store.ts'
@@ -42,3 +47,6 @@ export type { McpClientSpanHandle, PtcRelayHandle } from './runtime-core/trace.t
 // —— 1.13.0：桌面 S3 治理面（文件安全/审计/取证）——
 export { redact, type RedactionResult } from './runtime-core/redaction.ts'
 export { exportForensicsBundle, verifyBundle, type ForensicsBundle, type ExportMeta } from './session/export.ts'
+// —— 1.14.0（K-S4-1 / D-43）：PluginManager 装载报告面 + 签名校验挂载点 ——
+export { loadPlugins, ReloadManager, type LoadReportVO, type LoadPluginsResult, type LoadPluginsOptions, type LoadStage, type StageStatus, type PeerConflictChain } from './load/report.ts'
+export { verifyPluginFile, type SignatureGateOptions, type SigGateResult } from './load/sigGate.ts'
