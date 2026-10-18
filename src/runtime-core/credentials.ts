@@ -28,6 +28,8 @@ export interface CredentialResolveOptions {
   keychainReader?: (service: string) => string | null
   /** reveal 审计回调（值不入参——审计全量留痕但零明文） */
   audit?: (event: { action: 'resolve' | 'reveal'; provider: string; source: CredentialSource; origin: string }) => void
+  /** 1.14-S4（K-POOL-1）：显式 env 变量候选（modelPool keyEnv 精确引用——替代 provider 缺省表；keychain 链保持在前） */
+  envVarCandidates?: string[]
 }
 
 /** provider → 候选 env 变量（按序检索；CAR_LLM_API_KEY 为通用兜底） */
@@ -107,7 +109,8 @@ export class CredentialService {
 
     const allowEnv = opts.allowEnvFallback === true || env.CAR_ALLOW_ENV_CREDENTIALS === '1'
     if (allowEnv) {
-      const candidates = providerEnvVars(provider)
+      // 1.14-S4（K-POOL-1）：显式候选（keyEnv 精确引用）压过 provider 缺省表——用户点名变量即显式意见
+      const candidates = opts.envVarCandidates?.length ? opts.envVarCandidates : providerEnvVars(provider)
       for (const name of candidates) {
         searched.push(`env:${name}`)
         if (env[name]) {

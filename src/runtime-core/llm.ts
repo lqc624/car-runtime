@@ -285,6 +285,8 @@ export interface OpenAICompatOptions {
   /** 凭据服务与 provider 名（Bearer token 来源） */
   credentials?: CredentialService
   provider?: string
+  /** 1.14-S4（K-POOL-1）：成员级凭据 env 变量名引用（modelPool keyEnv——resolve 精确候选；keychain 链保持在前） */
+  credentialEnvVars?: string[]
   fetchImpl?: typeof fetch
   /** §3.5.4 基线：总 120s / 首字节 30s / 2 次退避 1s-2s（测试可注入缩短） */
   timeoutMs?: number
@@ -421,6 +423,10 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
   const firstByteMs = opts.firstByteMs ?? 30_000
   const retries = opts.retries ?? 2
   const backoffMs = opts.backoffMs ?? [1_000, 2_000]
+  // 1.14-S4（K-POOL-1）：成员级 keyEnv 精确候选——keyEnv 引用即显式意见（env 通道开启；候选=仅该变量，keychain 链保持在前）
+  const credResolveOpts = opts.credentialEnvVars?.length
+    ? { envVarCandidates: opts.credentialEnvVars, allowEnvFallback: true }
+    : {}
 
   const toOpenAI = (req: LlmRequest, apiKey: string) => ({
     // 1.4-BUG-1：method: 'POST' 缺失——M8 最小实现潜伏缺陷（注入式 fetch 的单测忽略 method，
@@ -471,7 +477,7 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
         buildRequest: async () => {
           let apiKey = ''
           if (opts.credentials) {
-            const ref = opts.credentials.resolve(opts.provider ?? id, {})
+            const ref = opts.credentials.resolve(opts.provider ?? id, credResolveOpts)
             apiKey = opts.credentials.reveal(ref, {})
           }
           return toOpenAI(req, apiKey)
@@ -502,6 +508,8 @@ export interface AnthropicAdapterOptions {
   sleep?: (ms: number) => Promise<void>
   /** D-20：Anthropic API max_tokens 必填——req.maxTokens 缺席时取此缺省（provider 差异登记，缺省 4096） */
   defaultMaxTokens?: number
+  /** 1.14-S4（K-POOL-1）：成员级凭据 env 变量名引用（modelPool keyEnv——resolve 精确候选；keychain 链保持在前） */
+  credentialEnvVars?: string[]
 }
 
 /** stop_reason → CAR finishReason（未映射 fail-visible——openai FINISH_MAP 同纪律） */
@@ -683,6 +691,10 @@ export function createAnthropicAdapter(opts: AnthropicAdapterOptions): LlmAdapte
   const firstByteMs = opts.firstByteMs ?? 30_000
   const retries = opts.retries ?? 2
   const backoffMs = opts.backoffMs ?? [1_000, 2_000]
+  // 1.14-S4（K-POOL-1）：成员级 keyEnv 精确候选（同 openai-compat 口径）
+  const credResolveOpts = opts.credentialEnvVars?.length
+    ? { envVarCandidates: opts.credentialEnvVars, allowEnvFallback: true }
+    : {}
 
   return {
     id,
@@ -694,7 +706,7 @@ export function createAnthropicAdapter(opts: AnthropicAdapterOptions): LlmAdapte
         buildRequest: async () => {
           let apiKey = ''
           if (opts.credentials) {
-            const ref = opts.credentials.resolve(opts.provider ?? id, {})
+            const ref = opts.credentials.resolve(opts.provider ?? id, credResolveOpts)
             apiKey = opts.credentials.reveal(ref, {})
           }
           return toAnthropic(req, apiKey)

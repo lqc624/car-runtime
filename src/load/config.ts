@@ -54,6 +54,42 @@ export interface LlmConfig {
   compaction?: CompactionConfig
 }
 
+/** 1.14-S4（K-POOL-1 / D-42）：模型池端点登记（多端点 fallback 候选；凭据仅收 keyEnv 引用） */
+export interface ModelPoolEndpointSpec {
+  /** 端点标识（routing/decide 落链定位；缺省 ep-1..N 派生；重复显式拒绝） */
+  id?: string
+  baseUrl: string
+  model: string
+  /** 适配器家族（config 可装配集 = 内置两族；缺省 openai-compat） */
+  adapterId?: 'openai-compat' | 'anthropic'
+  /** 凭据 env 变量名引用（明文 key 显式拒绝——CR-05；缺省按 adapterId 缺省表 + CAR_LLM_API_KEY） */
+  keyEnv?: string
+  /** 优先级：数值越小越优先（缺省 0） */
+  priority?: number
+  /** 同优先级内次序：越大越先（缺省 0——D-42：登记生效为排序 tie-break，不做负载均衡调度） */
+  weight?: number
+  /** 成员级 maxTokens（缺省回落 llm.maxTokens） */
+  maxTokens?: number
+}
+
+/** 1.14-S4（K-POOL-1 / D-42）：health 预检策略（doctor 面同款口径——值不打印） */
+export interface ModelPoolProbeConfig {
+  /** 缺省开；不可达端点按序跳过（fail-visible 落 routing/decide attempts） */
+  enabled?: boolean
+  /** 单端点探测超时（缺省 4000ms） */
+  timeoutMs?: number
+  /** 探测结果缓存 TTL（缺省 30000ms；0 = 每请求重探） */
+  ttlMs?: number
+}
+
+/** 1.14-S4（K-POOL-1 / D-42）：模型池登记。与 llm.baseUrl/model/adapterId 并存时池装配压过（每次路由决策落链可解释）；llm.maxTokens/allowEnvFallback/compaction 仍生效。无 modelPool 配置 = 行为与 1.13 逐字节一致（兼容验收线） */
+export interface ModelPoolConfig {
+  endpoints: ModelPoolEndpointSpec[]
+  probe?: ModelPoolProbeConfig
+  /** 候选请求尝试上限（含首选；缺省 = 端点数） */
+  maxAttempts?: number
+}
+
 export interface McpServerSpec {
   /** stdio 通道启动命令（与 url 互斥——1.5-S2 起二选一显式登记） */
   command?: string
@@ -70,6 +106,8 @@ export interface CarConfig {
   sandbox?: SandboxSigConfig
   /** 1.4-S3（D-16）：模型接入配置键位空间；凭据禁入（CR-05）——只放端点/模型名/开关 */
   llm?: LlmConfig
+  /** 1.14-S4（K-POOL-1 / D-42）：模型池登记（多端点 fallback；与 llm.* 并存时池压过，路由决策落链） */
+  modelPool?: ModelPoolConfig
   /** 1.4-S7（D-18）：MCP server 登记面（--mcp <id> 显式启用） */
   mcp?: { servers: Record<string, McpServerSpec> }
 }
@@ -92,6 +130,66 @@ const nonEmptyTrimmed = () =>
 
 const stringMap = () =>
   z.record(z.string(), z.string({ invalid_type_error: '必须为字符串' }), { invalid_type_error: '必须为字符串映射', required_error: '必须为字符串映射' })
+
+// 1.14-S4（K-POOL-1）辅助：正整数 / 非负整数
+const positiveInt = () =>
+  z.number({ invalid_type_error: '必须为正整数', required_error: '必须为正整数' })
+    .refine(v => Number.isFinite(v) && Number.isInteger(v) && v > 0, { message: '必须为正整数' })
+const nonNegativeInt = () =>
+  z.number({ invalid_type_error: '必须为非负整数', required_error: '必须为非负整数' })
+    .refine(v => Number.isFinite(v) && Number.isInteger(v) && v >= 0, { message: '必须为非负整数' })
+
+// 明文凭据键黑名单（1.14-S4 / CR-05）：专用文案先于未知键检查（首个 issue 渲染）
+const PLAINTEXT_CRED_KEYS = ['key', 'apiKey', 'api_key', 'apikey', 'token', 'password']
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+const POOL_ENDPOINT_KEYS = new Set(['id', 'baseUrl', 'model', 'adapterId', 'keyEnv', 'priority', 'weight', 'maxTokens'])
+
+/**
+ * 池端点 schema（1.14-S4）：passthrough + superRefine 显式拒绝（等价 strict，但明文凭据键
+ * 给专用文案——CR-05 红线「明文 key 显式拒绝」必须可读可引导，不能只报「未知键」）。
+ */
+const poolEndpointSchema = z.object({
+  id: nonEmptyTrimmed().optional(),
+  baseUrl: nonEmptyTrimmed().refine(v => /^https?:\/\//.test(v), { message: '必须为 http(s) URL' }),
+  model: nonEmptyTrimmed(),
+  adapterId: z.enum(['openai-compat', 'anthropic'], { errorMap: () => ({ message: '必须为 openai-compat 或 anthropic（config 可装配集 = 内置两族）' }) }).optional(),
+  keyEnv: nonEmptyTrimmed().refine(v => ENV_NAME_RE.test(v), { message: '必须为环境变量名（明文凭据禁入——凭据仅收 keyEnv 引用，CR-05）' }).optional(),
+  priority: positiveInt().optional(),
+  weight: nonNegativeInt().optional(),
+  maxTokens: positiveInt().optional(),
+}).passthrough().superRefine((obj, ctx) => {
+  for (const k of PLAINTEXT_CRED_KEYS) {
+    if (k in obj) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [k], message: `明文凭据禁入——凭据仅收 keyEnv（环境变量名引用），明文键 "${k}" 一律拒绝` })
+      return
+    }
+  }
+  for (const k of Object.keys(obj)) {
+    if (!POOL_ENDPOINT_KEYS.has(k)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [k], message: '未登记键（登记键位：id/baseUrl/model/adapterId/keyEnv/priority/weight/maxTokens）' })
+      return
+    }
+  }
+})
+
+const modelPoolSchema = z.object({
+  endpoints: z.array(poolEndpointSchema, { invalid_type_error: '必须为端点数组', required_error: '必须为端点数组' })
+    .min(1, { message: '至少登记一个端点（池空 = CAR-E-CONFIG；无池需求请移除 modelPool 键，行为与 1.13 一致）' }),
+  probe: z.object({
+    enabled: z.boolean({ invalid_type_error: '必须为布尔', required_error: '必须为布尔' }).optional(),
+    timeoutMs: positiveInt().optional(),
+    ttlMs: nonNegativeInt().optional(),
+  }).strict().optional(),
+  maxAttempts: positiveInt().optional(),
+}).strict().superRefine((obj, ctx) => {
+  // 端点 id 唯一（缺省派生同口径）——routing/decide 落链定位歧义禁入
+  const ids = new Set<string>()
+  for (const [i, ep] of (obj.endpoints ?? []).entries()) {
+    const id = ep.id ?? `ep-${i + 1}`
+    if (ids.has(id)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['endpoints', i], message: `端点 id "${id}" 重复（落链定位歧义，禁静默）` })
+    ids.add(id)
+  }
+})
 
 const mcpServerSchema = z.object({
   command: nonEmptyTrimmed().optional(),
@@ -138,13 +236,15 @@ const rawSchema = z.object({
         .refine(v => Number.isInteger(v) && v > 0, { message: '必须为正整数' }).optional(),
     }).strict().optional(),
   }).strict().optional(),
+  // 1.14-S4（K-POOL-1 / D-42）：模型池登记（多端点 fallback + health + routing/decide 落链）
+  modelPool: modelPoolSchema.optional(),
   mcp: z.object({
     servers: z.record(z.string(), mcpServerSchema, { invalid_type_error: '必须为对象（serverId → 启动规格）' }),
   }).strict().optional(),
 }, { invalid_type_error: '配置顶层必须为 JSON 对象' }).strict()
 
 /** 未登记键提示（渲染层拼 path）——与系统设计键位空间同步 */
-const KEY_SPACES = '登记键位：sandbox.* / llm.* / mcp.servers.*'
+const KEY_SPACES = '登记键位：sandbox.* / llm.* / llm.modelPool.* / mcp.servers.*'
 
 /** zod issue → CAR-E-CONFIG 渲染（首个 issue；unrecognized_keys 按键路径展开） */
 function renderIssue(error: z.ZodError): string {
@@ -201,6 +301,14 @@ function parseCarConfig(raw: unknown): { config: CarConfig; error?: string } {
       servers[sid] = spec
     }
     out.mcp = { servers }
+  }
+  if (d.modelPool) {
+    const mp = d.modelPool as { endpoints: ModelPoolEndpointSpec[]; probe?: ModelPoolProbeConfig; maxAttempts?: number }
+    out.modelPool = {
+      endpoints: mp.endpoints.map(ep => ({ ...ep })),
+      ...(mp.probe ? { probe: { ...mp.probe } } : {}),
+      ...(mp.maxAttempts !== undefined ? { maxAttempts: mp.maxAttempts } : {}),
+    }
   }
   return { config: out }
 }

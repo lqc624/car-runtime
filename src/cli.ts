@@ -25,6 +25,7 @@ import { Context } from './kernel/context.ts'
 import { mountPlugin } from './load/loader.ts'
 import { verifyPluginFile } from './load/sigGate.ts'
 import { loadCarConfig, mergeSignatureGate, mergeLlmConfig, warmCarConfig } from './load/config.ts'
+import { assembleModelPool } from './load/pool.ts'
 import { generateSigningKeypair, signPluginFile, resolveTrustRoot } from './load/sign.ts'
 import { doctorCredentials, doctorConnectivity, doctorKeychain, doctorSignature, doctorModelReadiness } from './dx/doctor.ts'
 import { RuntimeCore, createOpenAICompatAdapter, createAnthropicAdapter } from './runtime-core/llm.ts'
@@ -64,8 +65,9 @@ const HELP = `用法: car <command> [args]
 CAR_UNSIGNED_ALLOW=1 显式声明豁免（warn 缺签路径计数 confirmed=yes，横幅保留）
 配置文件通道（1.5 起双载体）：cwd car.config.ts（export default {…}；发现序 ts > json）或
 car.config.json 或 --config <path>；键位 sandbox.unsigned.allow / sandbox.sig.enforce /
-sandbox.sig.trustRoot / llm.* / mcp.servers.*（stdio: command/args/env；远程: url/headers，
-\${ENV_VAR} 引用注入凭据）；优先级 flag > env > 配置 > 缺省；未知键 fail-visible`
+sandbox.sig.trustRoot / llm.* / llm.modelPool.*（多端点 fallback：endpoints id/baseUrl/model/
+adapterId/keyEnv/priority/weight/maxTokens + probe + maxAttempts；路由决策落链）/ mcp.servers.*
+（stdio: command/args/env；远程: url/headers，\${ENV_VAR} 引用注入凭据）；优先级 flag > env > 配置 > 缺省；未知键 fail-visible`
 
 // 进程内热重载会话（ReloadManager 持有 epoch 与实例注册表；同进程连续 reload 语义完整）
 let reloadMgrPromise: Promise<import('./load/report.ts').ReloadManager> | undefined
@@ -193,27 +195,55 @@ async function main(): Promise<number> {
           ...(mtFlag !== undefined ? { maxTokens: Number(mtFlag) } : {}),
         })
         const prompt = flagValue(rest, '--prompt')
-        if (!llm.baseUrl || !llm.model || prompt === undefined) {
-          console.error('CAR-E-LLM-CONFIG: 真实模型路径需要 baseUrl + model + --prompt——')
-          console.error('  配置：car.config.ts（export default）或 car.config.json {"llm":{"baseUrl":"https://…","model":"…"}} / env CAR_LLM_BASE_URL+CAR_LLM_MODEL / flag --base-url --model --prompt')
-          console.error('  anthropic：llm.adapterId "anthropic"（或 --adapter-id anthropic）+ baseUrl https://api.anthropic.com；凭据 ANTHROPIC_API_KEY')
-          console.error('  凭据：OPENAI_API_KEY / ANTHROPIC_API_KEY（env fallback 需 CAR_ALLOW_ENV_CREDENTIALS=1 或 llm.allowEnvFallback）或 keychain；诊断：car doctor')
+        if (prompt === undefined) {
+          console.error('CAR-E-LLM-CONFIG: 真实模型路径需要 --prompt——')
           console.error('  （无模型演示流：--demo）')
           return 2
         }
-        const modelName = llm.model
+        // 1.14-S4（K-POOL-1 / D-42）：modelPool 登记时池装配压过 llm.baseUrl/model/adapterId（每次路由决策落链可解释）
+        const poolCfg = cfgLlm.config.modelPool ?? null
+        const cfgBaseUrl = llm.baseUrl
+        const cfgModel = llm.model
+        let modelName = cfgModel ?? ''
         const credService = new CredentialService()
         const core = new RuntimeCore(credService)
         core.bindContext(ctx)
         // 适配器经根作用域 effect 可逆注册（bindContext 必须先于 register——否则走非可逆直注册分支）；
-        // 1.5-S1（D-20）：adapterId='anthropic' → anthropic 适配器（Messages API）；缺省 openai-compat 不变
-        core.registerLlmAdapter(llm.adapterId === 'anthropic'
-          ? createAnthropicAdapter({ baseUrl: llm.baseUrl, credentials: credService, provider: 'anthropic' })
-          : createOpenAICompatAdapter({
-              baseUrl: llm.baseUrl,
-              credentials: credService,
-              provider: 'openai-compat',
-            }), { default: true })
+        // 1.5-S1（D-20）：adapterId='anthropic' → anthropic 适配器（Messages API）；缺省 openai-compat 不变；
+        // 1.14-S4（K-POOL-1 / D-42）：modelPool 登记时池装配压过单端点（onDecide → routing/decide 落链）
+        if (poolCfg) {
+          const assembly = assembleModelPool({
+            pool: poolCfg,
+            credentials: credService,
+            onDecide: d => log.append('runtime', 'routing', d.turnId ?? 'T0', {
+              type: 'decide',
+              selected: d.selected,
+              reason: d.reason,
+              retries: d.retries,
+              attempts: d.attempts,
+            }),
+          })
+          core.registerLlmAdapter(assembly.adapter, { default: true })
+          // chatStep model 形参 = 首位候选（池内逐成员改写 req.model——usage 按成员模型落账）
+          modelName = assembly.members[0]!.model
+          console.log(`[pool] ${assembly.members.length} 端点入池（候选序：${assembly.members.map(m => m.id).join(' → ')}）`)
+        } else {
+          if (!cfgBaseUrl || !cfgModel) {
+            console.error('CAR-E-LLM-CONFIG: 真实模型路径需要 baseUrl + model——')
+            console.error('  配置：car.config.ts（export default）或 car.config.json {"llm":{"baseUrl":"https://…","model":"…"}} / env CAR_LLM_BASE_URL+CAR_LLM_MODEL / flag --base-url --model')
+            console.error('  anthropic：llm.adapterId "anthropic"（或 --adapter-id anthropic）+ baseUrl https://api.anthropic.com；凭据 ANTHROPIC_API_KEY')
+            console.error('  模型池：llm.modelPool.endpoints（多端点 fallback + health 预检；凭据 keyEnv 引用；路由决策落链）')
+            console.error('  凭据：OPENAI_API_KEY / ANTHROPIC_API_KEY（env fallback 需 CAR_ALLOW_ENV_CREDENTIALS=1 或 llm.allowEnvFallback）或 keychain；诊断：car doctor')
+            return 2
+          }
+          core.registerLlmAdapter(llm.adapterId === 'anthropic'
+            ? createAnthropicAdapter({ baseUrl: cfgBaseUrl, credentials: credService, provider: 'anthropic' })
+            : createOpenAICompatAdapter({
+                baseUrl: cfgBaseUrl,
+                credentials: credService,
+                provider: 'openai-compat',
+              }), { default: true })
+        }
         // MCP 工具进 turn（D-18）：--mcp <serverId>（可重复；server 启动规格在 car.config.json mcp.servers 登记）
         const mcpIds: string[] = []
         // 1.8-D29：活跃 turn span 句柄（startTurn 后赋值——MCP 工具闭包运行期取 client span 挂链面）
@@ -302,7 +332,8 @@ async function main(): Promise<number> {
               model: modelName,
               tools: toToolDefinitions(toolsMap),
               ...(llm.maxTokens !== undefined ? { maxTokens: llm.maxTokens } : {}),
-              ...(llm.adapterId ? { adapterId: llm.adapterId } : {}),
+              // 1.14-S4：池装配时不传 adapterId（池适配器 = default；req.model 由池内按成员改写）
+              ...(poolCfg ? {} : llm.adapterId ? { adapterId: llm.adapterId } : {}),
               signal,
             }).then(
               res => { step.end(res.stopReason); return res },

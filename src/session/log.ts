@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { decodeLogBuffer, splitJsonlLines } from './format.ts'
 
-export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' | 'fork' | 'system' | 'usage' | 'compact' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；M5-DEC4 加法扩展：跨宿主 fork 标记事件；1.4-S2 加法扩展：system prompt 落链（§3.5.5：新模型可见输入 = 新事件类型）；1.11-S2 加法扩展：usage 计量事实（D-33，actor='runtime'、model_visible=0 不进模型消息流，deriveMessages 不投影）；六值 TurnEndReason 不变；1.14-S2 加法扩展（K-MP-2 / D-40）：历史压缩事件（actor='runtime'，append-only 只追加——payload={summary, compactedUpTo, ...}，投影按 compactedUpTo 前缀折叠为摘要，原事件链不改写）
+export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' | 'fork' | 'system' | 'usage' | 'compact' | 'routing' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；M5-DEC4 加法扩展：跨宿主 fork 标记事件；1.4-S2 加法扩展：system prompt 落链（§3.5.5：新模型可见输入 = 新事件类型）；1.11-S2 加法扩展：usage 计量事实（D-33，actor='runtime'、model_visible=0 不进模型消息流，deriveMessages 不投影）；六值 TurnEndReason 不变；1.14-S2 加法扩展（K-MP-2 / D-40）：历史压缩事件（actor='runtime'，append-only 只追加——payload={summary, compactedUpTo, ...}，投影按 compactedUpTo 前缀折叠为摘要，原事件链不改写）；1.14-S4 加法扩展（K-POOL-1 / D-42）：模型池路由决策（actor='runtime'，payload.type='decide'，selected/reason/retries/attempts——禁静默换模型；model_visible=0 不进模型消息流，deriveMessages 不投影——同 usage 纪律）
 export type Actor = 'user' | 'model' | 'plugin' | 'runtime'
 export interface SessionEvent {
   seq: number
