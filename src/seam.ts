@@ -22,6 +22,10 @@
  *   mountPlugin 组合呈现的 SKIPPED 标注）+ ReloadManager 出面（热重载 epoch 击穿 + invalidate 语义随本面）+
  *   verifyPluginFile 出面（签名校验挂载点——宿主自有装载路径可复用同一签名门；minisign 轨唯一实装，sigstore
  *   主轨维持 verifier 骨架期预留——D-43 裁决：登记 strict 期限不引入 sigstore 依赖，engines 硬不兼容见评估报告）。
+ * 加法登记：1.14.1 —— B2 前置补出面（1.14 消费面完成）：K-MP-2 压缩行为 API（shouldCompact/applyCompaction
+ *   + CompactionConfig——自动挂载点在宿主装配层〔runTurn 之间〕，立即压缩 API 独立可用，append-only 红线随本面）
+ *   + K-POOL-1 池装配行为 API（assembleModelPool/probePoolMember + PoolMember/RoutingDecision 类型——
+ *   桌面模型池设置 UI 与 doctor 池健康行消费面；routing/decide 落链由宿主接线 onDecide）。
  */
 export { SessionLog, loadSessionLog, deriveSessionId, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
 export { SessionFileStore } from './session/store.ts'
@@ -50,3 +54,6 @@ export { exportForensicsBundle, verifyBundle, type ForensicsBundle, type ExportM
 // —— 1.14.0（K-S4-1 / D-43）：PluginManager 装载报告面 + 签名校验挂载点 ——
 export { loadPlugins, ReloadManager, type LoadReportVO, type LoadPluginsResult, type LoadPluginsOptions, type LoadStage, type StageStatus, type PeerConflictChain } from './load/report.ts'
 export { verifyPluginFile, type SignatureGateOptions, type SigGateResult } from './load/sigGate.ts'
+// —— 1.14.1（B2 前置补出面）：K-MP-2 压缩行为 API + K-POOL-1 池装配行为 API（1.14 消费面完成）——
+export { shouldCompact, applyCompaction, type CompactionConfig } from './session/compact.ts'
+export { assembleModelPool, probePoolMember, type PoolMember, type PoolMemberHealth, type RoutingDecision, type RoutingAttempt } from './load/pool.ts'

@@ -37,6 +37,12 @@ export interface ChatStepOptions {
   adapterId?: string
   /** 1.4-S4（D-19）：turn 取消信号——chunk 间隙与流结束后（finish 检查前）检查，命中抛 TurnAborted */
   signal?: { aborted: boolean }
+  /**
+   * 1.14.1（K-MP-1 消费面 / D-39）：思考参数透传——chatStep 是宿主 model 回调的唯一路径，
+   * 本形参补齐后 reasoning 才经 chatStep 可达（off / 缺席 = 不下发该字段，字节面零痕迹）；
+   * 模型元数据思考档位判断在宿主侧（models:meta），内核防线 = 未知档位 fail-visible。
+   */
+  reasoning?: { effort: 'off' | 'low' | 'medium' | 'high' }
 }
 
 /** ModelStep 加法扩展：脱敏计数留痕（S15 secretsRedacted 同名口径） */
@@ -78,6 +84,8 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
     tools,
     ...(maxTokens != null ? { maxTokens } : {}),
     ...(adapterId ? { adapterId } : {}),
+    // 1.14.1（K-MP-1 消费面）：reasoning 透传（off/缺席 = 不下发）
+    ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
     ...(opts.log.sessionId ? { metadata: { sessionId: opts.log.sessionId, turnId, traceId: `${opts.log.sessionId}:${turnId}` } } : {}),
   })
