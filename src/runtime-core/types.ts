@@ -57,6 +57,13 @@ export interface LlmUsage {
   adapterId: string
   /** provider 原始 usage 对象（anthropic 为 messageStart/messageDelta 两原始片段） */
   providerRaw: unknown
+  /**
+   * 1.14-S3（K-MP-2b / D-41）：请求分段计量——仅采 provider 真实返回的分段事实（归一化后），
+   * **无分段事实 = 不带键（禁静态估算，桌面色条退化单色不造假）**。v1 分段 = reasoningTokens
+   * （openai completion_tokens_details.reasoning_tokens——K-MP-1 思考参数的计量配套，thinking
+   * 输出细分；anthropic thinking 计入 output_tokens 无细分事实 → 缺省不带键，登记）。
+   */
+  segments?: { reasoningTokens?: number }
 }
 
 /** 流式块（finishReason 一经产生不可被任何中间层改写） */

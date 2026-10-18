@@ -72,12 +72,13 @@ export class TurnAborted extends Error {
  * 在 JSONL，聚合由事实行求和而非运行时状态；字段非数值容错跳过不吞计数）。无 usage 事件
  * 返回 undefined → turnEnd meta 不带 usage 键（缺省=未采集，旧格式向后兼容）。
  */
-function turnUsageFrom(log: SessionLog, turnId: string): { input: number; output: number; cacheRead: number; cacheCreation: number; requests: number } | undefined {
+function turnUsageFrom(log: SessionLog, turnId: string): { input: number; output: number; cacheRead: number; cacheCreation: number; requests: number; segments?: { reasoningTokens: number } } | undefined {
   let input = 0
   let output = 0
   let cacheRead = 0
   let cacheCreation = 0
   let requests = 0
+  let reasoning: number | undefined
   for (const e of log.events) {
     if (e.kind !== 'usage' || e.turnId !== turnId) continue
     const p = (e.payload ?? {}) as Record<string, unknown>
@@ -85,9 +86,14 @@ function turnUsageFrom(log: SessionLog, turnId: string): { input: number; output
     if (typeof p.output === 'number') output += p.output
     if (typeof p.cacheRead === 'number') cacheRead += p.cacheRead
     if (typeof p.cacheCreation === 'number') cacheCreation += p.cacheCreation
+    // 1.14-S3（K-MP-2b / D-41）：分段聚合——任一请求携带 segments.reasoningTokens 即求和；
+    // 全 turn 无分段事实 = meta.usage 不带 segments 键（禁估算补造）
+    const seg = (p.segments ?? null) as { reasoningTokens?: unknown } | null
+    if (seg && typeof seg.reasoningTokens === 'number') reasoning = (reasoning ?? 0) + seg.reasoningTokens
     requests++
   }
-  return requests ? { input, output, cacheRead, cacheCreation, requests } : undefined
+  if (!requests) return undefined
+  return { input, output, cacheRead, cacheCreation, requests, ...(reasoning !== undefined ? { segments: { reasoningTokens: reasoning } } : {}) }
 }
 
 export async function runTurn(opts: {

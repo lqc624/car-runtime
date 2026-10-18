@@ -117,6 +117,8 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
       output: usage.outputTokens,
       cacheRead: usage.cacheReadTokens,
       cacheCreation: usage.cacheCreationTokens,
+      // 1.14-S3（K-MP-2b / D-41）：分段事实随事件落链——无分段 = 不带键（禁估算）
+      ...(usage.segments ? { segments: usage.segments } : {}),
       providerRaw: usage.providerRaw,
     })
   }

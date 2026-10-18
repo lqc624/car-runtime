@@ -309,6 +309,9 @@ class Retryable extends Error {}
  * 1.11-S1（D-33 / 计量设计 §1.1）：openai usage 归一——prompt_tokens 含 cached，inputTokens
  * 必须做减法（prompt − prompt_tokens_details.cached_tokens）；cache_creation 恒 0（无对应字段，
  * 登记不估算）。usage 对象缺席/畸形（两侧主字段任一非数值）= 整条不落（缺失口径，禁补造）。
+ * 1.14-S3（K-MP-2b / D-41）：分段计量——completion_tokens_details.reasoning_tokens（思考输出
+ * 细分，provider 真实事实）数值才采（segments.reasoningTokens）；details/字段缺席或非数值 =
+ * segments 不带键（禁估算补造）。
  */
 function normalizeOpenAIUsage(u: unknown, model: string, adapterId: string): LlmUsage | undefined {
   if (!u || typeof u !== 'object') return undefined
@@ -316,6 +319,8 @@ function normalizeOpenAIUsage(u: unknown, model: string, adapterId: string): Llm
   if (typeof r.prompt_tokens !== 'number' || typeof r.completion_tokens !== 'number') return undefined
   const details = (r.prompt_tokens_details ?? null) as Record<string, unknown> | null
   const cached = details && typeof details.cached_tokens === 'number' ? details.cached_tokens : 0
+  const compDetails = (r.completion_tokens_details ?? null) as Record<string, unknown> | null
+  const reasoning = compDetails && typeof compDetails.reasoning_tokens === 'number' ? compDetails.reasoning_tokens : undefined
   return {
     inputTokens: r.prompt_tokens - cached,
     outputTokens: r.completion_tokens,
@@ -324,6 +329,7 @@ function normalizeOpenAIUsage(u: unknown, model: string, adapterId: string): Llm
     model,
     adapterId,
     providerRaw: u,
+    ...(reasoning !== undefined ? { segments: { reasoningTokens: reasoning } } : {}),
   }
 }
 
@@ -521,6 +527,8 @@ function mergeAnthropicUsage(
 ): LlmUsage | undefined {
   if (!start || !delta) return undefined
   if (typeof start.input_tokens !== 'number' || typeof delta.output_tokens !== 'number') return undefined
+  // 1.14-S3（K-MP-2b / D-41）：anthropic 无输出细分事实（thinking 计入 output_tokens）→
+  // segments 不带键（禁估算补造——桌面色条退化单色，登记口径）
   return {
     inputTokens: start.input_tokens,
     outputTokens: delta.output_tokens,
