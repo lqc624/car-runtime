@@ -25,6 +25,11 @@
  *    解析「先摘 evt.usage 再判 choice」（空 choices 尾包不再被吞）；anthropic message_start（input 侧）
  *    + message_delta（output 侧）两包合并（message_delta 缺席 = output 不完整，整条不落）；
  *    归一口径 §1.1（openai 减法 / anthropic 透传 + cache_creation），畸形/缺失整条不落（禁补造）。
+ *  - 1.14-S1（K-MP-1 / D-39）：思考参数透传——LlmRequest.reasoning.effort 按家族映射：
+ *    openai-compat = `reasoning_effort`；anthropic = `thinking:{type:'enabled',budget_tokens}`
+ *    （ANTHROPIC_THINKING_BUDGET 表）；**off / 缺席 = 字节面不下发**；未知 effort 值显式报错
+ *    （CAR-E-LLM-REASONING，fail-visible 禁静默忽略——宿主越型传入防线）；anthropic 侧
+ *    budget ≥ max_tokens 违反 API 约束 → 显式报错提示调高（禁静默改写 max_tokens）。
  */
 import { CarM8Error, providerUnreachable } from './errors.ts'
 import { CredentialService } from './credentials.ts'
@@ -70,6 +75,22 @@ export class AdapterRegistry {
   list(): Array<{ id: string; isDefault: boolean }> {
     return [...this.#adapters.keys()].map(id => ({ id, isDefault: id === this.#defaultId }))
   }
+}
+
+// ==================== 1.14-S1（K-MP-1 / D-39）思考参数映射 ====================
+
+/** 归一思考档位：缺席/off → undefined（不下发）；low/medium/high 原样；未知值 fail-visible（宿主越型传入防线） */
+export function normalizeReasoningEffort(effort: unknown): 'off' | 'low' | 'medium' | 'high' | undefined {
+  if (effort === undefined || effort === null) return undefined
+  if (effort === 'off' || effort === 'low' || effort === 'medium' || effort === 'high') return effort
+  throw new Error(`CAR-E-LLM-REASONING: 未知思考档位 "${String(effort)}"（合法：off/low/medium/high；off/缺席 = 不下发）`)
+}
+
+/** anthropic effort → thinking.budget_tokens 映射（D-39 登记表）；off/缺席不下发 */
+const ANTHROPIC_THINKING_BUDGET: Record<'low' | 'medium' | 'high', number> = {
+  low: 2048,
+  medium: 8192,
+  high: 16384,
 }
 
 // ==================== finishReason 不可变守卫（SDK 边界） ====================
@@ -406,6 +427,11 @@ export function createOpenAICompatAdapter(opts: OpenAICompatOptions): LlmAdapter
     body: JSON.stringify({
       model: req.model,
       stream: true,
+      // 1.14-S1（K-MP-1 / D-39）：思考参数——effort 非 off/缺席才下发 reasoning_effort（off = 字节面零痕迹）
+      ...(normalizeReasoningEffort(req.reasoning?.effort) !== undefined &&
+        normalizeReasoningEffort(req.reasoning?.effort) !== 'off'
+        ? { reasoning_effort: normalizeReasoningEffort(req.reasoning?.effort) }
+        : {}),
       // 1.11-S1（D-33 / 计量设计 §9-2 推荐A）：usage 采集默认开启；第三方网关不兼容时的
       // 回退方案（baseUrl 白名单）登记可回退项——不支持网关走缺失口径（禁估算补造）
       stream_options: { include_usage: true },
@@ -545,6 +571,15 @@ function toAnthropic(req: LlmRequest, apiKey: string) {
     }
   }
   flushToolResults()
+  // 1.14-S1（K-MP-1 / D-39）：思考参数——effort → thinking.budget_tokens（ANTHROPIC_THINKING_BUDGET 表）；
+  // off/缺席不下发；budget ≥ max_tokens 违反 Messages API 约束（max_tokens 必须大于 budget_tokens）→
+  // 显式报错提示调高（fail-visible，禁静默改写 max_tokens）
+  const reasoningEffort = normalizeReasoningEffort(req.reasoning?.effort)
+  const thinkingBudget = reasoningEffort && reasoningEffort !== 'off' ? ANTHROPIC_THINKING_BUDGET[reasoningEffort] : undefined
+  const maxTokens = req.maxTokens ?? 4096
+  if (thinkingBudget !== undefined && thinkingBudget >= maxTokens) {
+    throw new Error(`CAR-E-LLM-REASONING: thinking budget_tokens(${thinkingBudget}) 必须小于 max_tokens(${maxTokens})——请调高 maxTokens（禁静默改写请求参数）`)
+  }
   return {
     method: 'POST' as const,
     headers: {
@@ -555,7 +590,8 @@ function toAnthropic(req: LlmRequest, apiKey: string) {
     body: JSON.stringify({
       model: req.model,
       stream: true,
-      max_tokens: req.maxTokens ?? 4096,
+      max_tokens: maxTokens,
+      ...(thinkingBudget !== undefined ? { thinking: { type: 'enabled', budget_tokens: thinkingBudget } } : {}),
       ...(system.length ? { system: system.join('\n\n') } : {}),
       messages: turns,
       ...(req.tools.length

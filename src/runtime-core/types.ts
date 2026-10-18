@@ -25,6 +25,10 @@ export interface LlmRequest {
   /** 1.4-S4（D-19）：turn 取消信号（runTurn 的 {aborted} 形态透传）——适配器在 attempt 前 /
    *  chunk 间隙检查；外部取消 ≠ 失败（不 retry、不产 error chunk，静默收口由 chatStep 抛 TurnAborted） */
   signal?: { aborted: boolean }
+  /** 1.14-S1（K-MP-1 / D-39）：思考参数——适配器按家族映射（openai-compat = reasoning_effort；
+   *  anthropic = thinking.budget_tokens）；**off / 缺席 = 不下发该字段**（字节面零痕迹，非「effort:none」）；
+   *  模型思考档位（模型级思考如 R1）为宿主侧模型元数据事实源（桌面 models:meta），内核不做档位判断 */
+  reasoning?: { effort: 'off' | 'low' | 'medium' | 'high' }
 }
 
 /** 工具调用流式增量（跨 chunk 聚合出完整 ToolCall） */
