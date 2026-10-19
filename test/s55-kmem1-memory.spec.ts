@@ -33,9 +33,9 @@ function buildSession(): SessionLog {
   return log
 }
 
-function tmpStore(): { store: MemoryStore; dir: string; cleanup: () => void } {
+function tmpStore(opts: { now?: () => number } = {}): { store: MemoryStore; dir: string; cleanup: () => void } {
   const dir = join(mkdtempSync(join(tmpdir(), 'car-mem-s55-')), 'memory')
-  const store = new MemoryStore(dir)
+  const store = new MemoryStore(dir, opts)
   return { store, dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
@@ -178,7 +178,10 @@ test('S55-5 投影隔离：memory 事件不进 deriveMessages + N1 快照自洽 
 
 test('S55-6 注入装载：确定性拼装 updatedAt 降序全量 + 预算门控 CAR-E-MEM-BUDGET 不静默截断 + 空记忆正常态', () => {
   const log = buildSession()
-  const { store, cleanup } = tmpStore()
+  // 受控时钟（1.15.2 缝）：CI 快 runner 上 write(new) 与 edit(old) 可能同毫秒——updatedAt 相等时
+  // 稳定排序保持插入序导致降序断言竞态（linux/macos CI 实证）；时钟注入消除时间精度耦合
+  let tick = 0
+  const { store, cleanup } = tmpStore({ now: () => ++tick * 1000 })
   try {
     // 空记忆 = 正常态（宿主跳过注入行），非错误
     const empty = loadMemoryForInjection(store, { budgetChars: 1000 })
@@ -186,13 +189,12 @@ test('S55-6 注入装载：确定性拼装 updatedAt 降序全量 + 预算门控
 
     store.write(log, { id: 'old', text: '旧记忆' })
     store.write(log, { id: 'new', text: '新记忆' })
-    // 触碰 updatedAt 保证确定性排序（同 ms 写入序不稳定——显式 edit 拉开）
     store.edit(log, 'old', '旧记忆（已维护）')
 
     const r1 = loadMemoryForInjection(store, { budgetChars: 100000 })
     assert.equal(r1.count, 2, '全量装入')
     assert.match(r1.rendered, /^\[CAR 记忆注入\] 共 2 条：/)
-    assert.ok(r1.rendered.indexOf('[old]') < r1.rendered.indexOf('[new]'), 'updatedAt 降序（最近维护在前）')
+    assert.ok(r1.rendered.indexOf('[old]') < r1.rendered.indexOf('[new]'), 'updatedAt 降序（最近维护在前——受控时钟下 edit(old) 时间戳 > write(new)）')
     const r2 = loadMemoryForInjection(store, { budgetChars: 100000 })
     assert.equal(r1.rendered, r2.rendered, '确定性拼装（同状态同输出）')
 

@@ -67,9 +67,12 @@ function assertValidId(id: string): void {
 
 export class MemoryStore {
   readonly dir: string
+  /** 时钟缝（1.15.2 测试可观测性）：缺省 Date.now；spec 注入受控时钟消除同毫秒排序竞态 */
+  readonly #now: () => number
 
-  constructor(dir: string) {
+  constructor(dir: string, opts?: { now?: () => number }) {
     this.dir = dir
+    this.#now = opts?.now ?? Date.now
     mkdirSync(dir, { recursive: true })
   }
 
@@ -132,7 +135,7 @@ export class MemoryStore {
     if (this.get(id)) {
       throw new Error(`CAR-E-MEM-EXISTS: 记忆 "${id}" 已存在（write 冲突 fail-visible——修改请走 edit）`)
     }
-    const now = Date.now()
+    const now = this.#now()
     const entry: MemoryEntry = { id, text: input.text, createdAt: now, updatedAt: now }
     if (input.tags?.length) entry.tags = [...input.tags]
     if (input.sourceSession) entry.sourceSession = input.sourceSession
@@ -156,7 +159,7 @@ export class MemoryStore {
     }
     // tags 语义：undefined = 不变（payload 不带键，重放取前态）；数组 = 整体替换（含空数组 =
     // 清空，payload 恒带键——重放 [] 与清空同构，禁「带键/缺键」二义）
-    const next: MemoryEntry = { ...prev, text, updatedAt: Date.now() }
+    const next: MemoryEntry = { ...prev, text, updatedAt: this.#now() }
     if (tags !== undefined) {
       const { tags: _drop, ...rest } = next as MemoryEntry & { tags?: string[] }
       void _drop
@@ -216,7 +219,7 @@ export class MemoryStore {
     } satisfies MemoryEventPayload)
     try {
       if (target.present) {
-        const entry: MemoryEntry = { id, text: target.text!, createdAt: target.createdAt!, updatedAt: Date.now() }
+        const entry: MemoryEntry = { id, text: target.text!, createdAt: target.createdAt!, updatedAt: this.#now() }
         if (target.tags?.length) entry.tags = [...target.tags]
         if (target.sourceSession) entry.sourceSession = target.sourceSession
         this.#writeFile(entry)
