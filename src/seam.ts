@@ -26,6 +26,15 @@
  *   + CompactionConfig——自动挂载点在宿主装配层〔runTurn 之间〕，立即压缩 API 独立可用，append-only 红线随本面）
  *   + K-POOL-1 池装配行为 API（assembleModelPool/probePoolMember + PoolMember/RoutingDecision 类型——
  *   桌面模型池设置 UI 与 doctor 池健康行消费面；routing/decide 落链由宿主接线 onDecide）。
+ * 加法登记：1.15.0 —— K-MEM-1 白盒记忆面（T-10 / D-46）：MemoryStore 出面（`.car/memory/` 逐条 JSON 存储 +
+ *   CRUD 落链行为 API——memory/write·edit·delete·rollback 审计事件随会话链哈希链保护，rollback = 链上版本栈
+ *   单步回退〔链即版本库〕；log 参数必填 = 无会话上下文显式拒绝）+ loadMemoryForInjection（确定性拼装 + 字符
+ *   近似预算门控 fail-visible；注入落链 = 宿主装配层 system ctx 行〔D-C3 预留位〕）+ 5 类型（MemoryEntry/
+ *   MemoryOp/MemoryEventPayload/MemoryInjectionResult + MemoryStore 随类）+ K-STEER-1 排队扫描（T-17 / D-47）：
+ *   pendingSteerTurns + PendingSteerTurn（未消费引导队列按 seq 序枚举，excludeTurnId 排除执行中 turn；FIFO 消费
+ *   调度留宿主装配层；投影隔离〔引导不进当前 turn 投影〕在 deriveMessages/chatStep 内建，随既有符号语义可达
+ *   零新符号）。负面清单（不出面）：存储引擎内部件（文件读写器/预算计算器/版本栈重放器——#私有方法）、
+ *   记忆注入落链执行器（宿主 system ctx 行职责）、消费调度器（宿主 FIFO 续跑职责）、cli 引导接线（非验收必需）。
  */
 export { SessionLog, loadSessionLog, deriveSessionId, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
 export { SessionFileStore } from './session/store.ts'
@@ -57,3 +66,6 @@ export { verifyPluginFile, type SignatureGateOptions, type SigGateResult } from 
 // —— 1.14.1（B2 前置补出面）：K-MP-2 压缩行为 API + K-POOL-1 池装配行为 API（1.14 消费面完成）——
 export { shouldCompact, applyCompaction, type CompactionConfig } from './session/compact.ts'
 export { assembleModelPool, probePoolMember, type PoolMember, type PoolMemberHealth, type RoutingDecision, type RoutingAttempt } from './load/pool.ts'
+// —— 1.15.0（K-MEM-1 / D-46）：白盒记忆面 +（K-STEER-1 / D-47）：引导消息排队扫描 ——
+export { MemoryStore, loadMemoryForInjection, type MemoryEntry, type MemoryOp, type MemoryEventPayload, type MemoryInjectionResult } from './memory/store.ts'
+export { pendingSteerTurns, type PendingSteerTurn } from './session/steer.ts'
