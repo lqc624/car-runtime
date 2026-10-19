@@ -189,6 +189,11 @@ const nodeHttpSseFetch = (url: string, init: { method?: string; headers?: Record
     const mod = u.protocol === 'https:' ? httpsRequest : httpRequest
     const req = mod(u, { method: init.method ?? 'GET', headers: init.headers }, res => {
       const status = res.statusCode ?? 0
+      // 1.15.2-BUG（桌面 S6 终验实证）：取消时 req.destroy(err) 会让**响应流** res 异步 emit
+      // 'error'——此前无监听 → Node 抛 unhandled 'error' 事件 → 宿主进程直接退出（Electron
+      // utilityProcess 无 uncaughtException 兜底时 = 句柄全失、引导队列被 resume 误标 interrupted）。
+      // 迭代器侧已由 streamSsePost 的 catch 按 D-19 静默收口，此处监听仅防进程级未捕获异常
+      res.on('error', () => { /* 取消/中断：由消费侧（streamSsePost catch）收口 */ })
       resolve({
         ok: status >= 200 && status < 300,
         status,
@@ -201,7 +206,12 @@ const nodeHttpSseFetch = (url: string, init: { method?: string; headers?: Record
         body: res,
       })
     })
-    const onAbort = () => { try { req.destroy(new Error('aborted')) } catch { /* 已完成 */ } }
+    // 1.15.2-BUG（桌面 S6 终验 R-1 实证）：取消走 destroy() **不带 Error**——此前
+    // `req.destroy(new Error('aborted'))` 在 Electron Node 24 宿主体内表现为进程级未捕获
+    // 异常（响应流侧异步派发，无监听 → 宿主 utilityProcess 直接退出，句柄全失、引导队列被
+    // resume 误标 interrupted）。取消语义已由 spec.signal / D-19 承载，无需错误对象；
+    // res 侧 error 监听为双保险（中断时的取消性错误不再逃逸到进程级）。
+    const onAbort = () => { try { req.destroy() } catch { /* 已完成 */ } }
     if (init.signal) {
       if (init.signal.aborted) onAbort()
       else init.signal.addEventListener('abort', onAbort, { once: true })
