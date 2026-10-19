@@ -35,6 +35,10 @@
  *   调度留宿主装配层；投影隔离〔引导不进当前 turn 投影〕在 deriveMessages/chatStep 内建，随既有符号语义可达
  *   零新符号）。负面清单（不出面）：存储引擎内部件（文件读写器/预算计算器/版本栈重放器——#私有方法）、
  *   记忆注入落链执行器（宿主 system ctx 行职责）、消费调度器（宿主 FIFO 续跑职责）、cli 引导接线（非验收必需）。
+ * 加法登记：1.15.1 —— 恢复层出面（K-STEER-1 桌面消费面缺口）：recoverInterrupted + RecoveryReport
+ *   出面（未闭合 turn 补记 turnEnd=interrupted + 未配对 toolCall 合成 toolResult——桌面 resume 接入
+ *   R-8 语义：消费前崩溃 → 执行中与引导 turn 均补记 interrupted，渲染层待执行徽标据此消隐；桌面禁
+ *   私补内核 = 本出面为唯一合法通道）。
  */
 export { SessionLog, loadSessionLog, deriveSessionId, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
 export { SessionFileStore } from './session/store.ts'
@@ -69,3 +73,5 @@ export { assembleModelPool, probePoolMember, type PoolMember, type PoolMemberHea
 // —— 1.15.0（K-MEM-1 / D-46）：白盒记忆面 +（K-STEER-1 / D-47）：引导消息排队扫描 ——
 export { MemoryStore, loadMemoryForInjection, type MemoryEntry, type MemoryOp, type MemoryEventPayload, type MemoryInjectionResult } from './memory/store.ts'
 export { pendingSteerTurns, type PendingSteerTurn } from './session/steer.ts'
+// —— 1.15.1（K-STEER-1 桌面消费面缺口）：恢复层出面（resume 补记 interrupted = R-8 语义）——
+export { recoverInterrupted, type RecoveryReport } from './loop/recover.ts'

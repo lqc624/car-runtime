@@ -32,9 +32,11 @@ const SEAM_SYMBOLS = [
   'shouldCompact', 'applyCompaction', 'assembleModelPool', 'probePoolMember',
   // 1.15.0：K-MEM-1 白盒记忆面 + K-STEER-1 排队扫描（投影隔离随 deriveMessages/chatStep 既有符号语义可达零新符号）
   'MemoryStore', 'loadMemoryForInjection', 'pendingSteerTurns',
+  // 1.15.1：恢复层出面（桌面 resume R-8 消费面缺口）
+  'recoverInterrupted',
 ] as const
 
-test('src/seam.ts 导出面完整（42 运行时符号）', async () => {
+test('src/seam.ts 导出面完整（43 运行时符号）', async () => {
   const seam = await import('../src/seam.ts')
   const missing = SEAM_SYMBOLS.filter((n) => (seam as Record<string, unknown>)[n] === undefined)
   assert.deepEqual(missing, [], `缺符号: ${missing.join(',')}`)
