@@ -63,7 +63,10 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
   //    1.5-BUG-1：此前仅透传 m.content，toolCall 属性被丢弃——工具调用历史在后续请求
   //    静默消失（真实 provider 对无 tool_calls 前驱的 tool 消息直接 400）；anthropic E2E
   //    生产调用点核查（1.5-GO-5）暴露，openai-compat 同样受益。
-  const messages = log.deriveMessages().map(m => ({
+  //    1.15-S2（K-STEER-1 / D-47）：投影带活跃 turn 口径——turn 进行中落链的他 turn user
+  //    事件（引导排队）不进当前 turn 请求（引导 ≠ 注入当前 turn 上下文红线）；无引导事件
+  //    时与 1.14.1 投影逐字节一致（兼容线）。
+  const messages = log.deriveMessages(undefined, { activeTurnId: turnId }).map(m => ({
     role: m.role as 'system' | 'user' | 'assistant' | 'toolResult',
     content: (m as unknown as { toolCall?: unknown }).toolCall !== undefined
       ? { toolCall: (m as unknown as { toolCall: unknown }).toolCall }

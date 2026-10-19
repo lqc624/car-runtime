@@ -32,6 +32,12 @@ const canonical = (e: Omit<SessionEvent, 'hash'>) =>
 export interface ModelSnapshot {
   /** 快照对应日志前缀边界（事件数），断言时逐字节比对前缀投影 */
   atSeq: number
+  /**
+   * 1.15-S2（K-STEER-1 / D-47）：快照时宿主声明的活跃 turn——提供时快照投影 = 边界内
+   * 「活跃 turn 起点之后落链的他 turn user 事件被过滤」口径（与请求投影同构，N1 逐字节
+   * 自洽）；缺席 = 全量前缀投影（1.14.1 形态，行为零变化）。
+   */
+  activeTurnId?: string
   request: unknown[]
 }
 
@@ -67,9 +73,15 @@ export class SessionLog {
     return full
   }
 
-  /** 模型请求发起时调用（agent-loop 集成点）：登记「请求时快照」 */
-  snapshotModelRequest(): ModelSnapshot {
-    const snap: ModelSnapshot = { atSeq: this.events.length, request: structuredClone(this.deriveMessages(this.events.length)) }
+  /** 模型请求发起时调用（agent-loop 集成点）：登记「请求时快照」；opts.activeTurnId 见 ModelSnapshot 注记 */
+  snapshotModelRequest(opts?: { activeTurnId?: string }): ModelSnapshot {
+    const filter = opts?.activeTurnId ? { activeTurnId: opts.activeTurnId } : undefined
+    const snap: ModelSnapshot = {
+      atSeq: this.events.length,
+      // 1.15-S2：口径必须随快照落盘——assert 重算时以同口径投影逐字节比对（漏存 = 口径丢失 → N1 假红）
+      ...(filter ? { activeTurnId: filter.activeTurnId } : {}),
+      request: structuredClone(this.deriveMessages(this.events.length, filter)),
+    }
     this.#snapshots.push(snap)
     return snap
   }
@@ -95,8 +107,14 @@ export class SessionLog {
    * 其 compactedUpTo 前缀折叠为单条 system 摘要（事件原文不改写，仅投影层折叠）；compact 之前的
    * 请求快照（atSeq ≤ compact.seq）不含 compact 事件 → 投影仍为全量形态（N1 不变量自洽——
    * 「请求时发出 = 日志前缀投影」逐快照成立）；无 compact 事件的日志投影与 1.13 逐字节一致。
+   * 1.15-S2（K-STEER-1 / D-47）投影隔离：opts.activeTurnId 提供时，跳过「turn 进行中落链的
+   * 他 turn user 事件」（特征 = kind='user' 且 seq > 活跃 turn 首事件 seq 且 turnId ≠ 活跃
+   * turnId——引导排队事件的链上形态）——**引导 ≠ 注入当前 turn 上下文**；不采用 turn 开始
+   * 快照（快照会误杀 turn 内落的 toolResult——agent loop 依赖实时投影），过滤口径精确匹配
+   * 「turn 外增量不进、turn 内增量照进」；无引导事件时过滤零命中，投影与 1.14.1 逐字节一致
+   * （兼容线）。缺省（无 opts）= 1.14.1 行为零变化。
    */
-  deriveMessages(upTo?: number): Array<{ role: string; [k: string]: unknown }> {
+  deriveMessages(upTo?: number, opts?: { activeTurnId?: string }): Array<{ role: string; [k: string]: unknown }> {
     const scoped = upTo !== undefined ? this.events.slice(0, upTo) : this.events
     let compactEvent: SessionEvent | undefined
     for (const e of scoped) { if (e.kind === 'compact') compactEvent = e } // last-wins
@@ -108,7 +126,18 @@ export class SessionLog {
       }
       compactedUpTo = cp.compactedUpTo // 折叠边界 = payload 声明的前缀边界（非 compact 事件自身 seq）
     }
-    const projected = compactedUpTo !== undefined ? scoped.filter(e => e.seq >= compactedUpTo!) : scoped
+    // 1.15-S2 投影隔离（D-47）：活跃 turn 首事件 seq 之后落链的他 turn user 事件 → 跳过
+    let steerSkip: ((e: SessionEvent) => boolean) | undefined
+    if (opts?.activeTurnId) {
+      let turnStartSeq = -1
+      for (const e of scoped) {
+        if (e.turnId === opts.activeTurnId) { turnStartSeq = e.seq; break }
+      }
+      if (turnStartSeq >= 0) {
+        steerSkip = (e: SessionEvent) => e.kind === 'user' && e.turnId !== opts.activeTurnId && e.seq > turnStartSeq
+      } // 活跃 turn 无链上事件（异常形态）→ 不过滤（fail-safe 退化为 1.14.1 全量投影）
+    }
+    const projected = compactedUpTo !== undefined ? scoped.filter(e => e.seq >= compactedUpTo! && !(steerSkip?.(e) ?? false)) : scoped.filter(e => !(steerSkip?.(e) ?? false))
     const lastSeqById = new Map<string, number>()
     for (const e of projected) {
       if (e.kind !== 'toolResult') continue
@@ -131,10 +160,11 @@ export class SessionLog {
     return out
   }
 
-  /** N1 不变量断言（CI 门禁雏形）：全部快照必须与当前日志前缀投影逐字节一致 */
+  /** N1 不变量断言（CI 门禁雏形）：全部快照必须与当前日志前缀投影逐字节一致（快照口径含 1.15-S2 activeTurnId 过滤） */
   assertModelVisibleLogged(): { ok: boolean; failedAt?: number } {
     for (const s of this.#snapshots) {
-      if (JSON.stringify(s.request) !== JSON.stringify(this.deriveMessages(s.atSeq))) {
+      const filter = s.activeTurnId ? { activeTurnId: s.activeTurnId } : undefined
+      if (JSON.stringify(s.request) !== JSON.stringify(this.deriveMessages(s.atSeq, filter))) {
         return { ok: false, failedAt: s.atSeq }
       }
     }

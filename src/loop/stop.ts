@@ -175,7 +175,9 @@ export async function runTurn(opts: {
         return { reason: 'aborted', steps, endReasonTrail: trail }
       }
       steps++
-      log.snapshotModelRequest() // agent-loop 集成点：请求时快照（N1）
+      // 1.15-S2（K-STEER-1 / D-47）：快照带活跃 turn 口径——与请求投影（chatStep 内
+      // activeTurnId 过滤）同构，N1 逐快照自洽；无引导事件时与 1.14.1 逐字节一致
+      log.snapshotModelRequest({ activeTurnId: turnId }) // agent-loop 集成点：请求时快照（N1）
       const step = await model()
 
       if (step.stopReason === 'error') {
