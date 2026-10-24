@@ -190,3 +190,27 @@ test('S50-9 config 解析：llm.compaction 拍平 + 非法值 CAR-E-CONFIG', () 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('S50-11 长会话端到端：211 事件真实规模触发缺省阈值 200 + 折叠/保护/重计三面正确（D-49 观察项验证缺口，设计 §10.4-2）', () => {
+  // §10.3 实测：真实会话最大 44 事件（距阈值 4.5 倍，从未触发）——本用例补端到端触发证据
+  const log = buildSession(70) // 1 system + 70 × (user+assistant+turnEnd) = 211
+  assert.equal(log.events.length, 211)
+  assert.equal(shouldCompact(log, { enabled: true }), true, '211 ≥ 缺省阈值 200——真实规模可触发')
+  const before = log.events.map(e => JSON.stringify(e))
+  assert.equal(log.verifyChain(), null)
+  const evt = applyCompaction(log, { protectLastTurns: 4 }) // 保护 T67~T70，折叠 T1~T66
+  assert.equal(log.events.length, 212, '只追加一条 compact 事件')
+  assert.equal(log.verifyChain(), null, '压缩后链校验仍 PASS')
+  for (let i = 0; i < before.length; i++) {
+    assert.equal(JSON.stringify(log.events[i]), before[i], `事件 seq=${i} 逐字节不变（append-only）`)
+  }
+  assert.ok((evt.payload as { summary: string }).summary.length > 0, '摘要产物在位')
+  const msgs = drain(log) as Array<{ role: string; content?: unknown }>
+  assert.equal(msgs[0]!.role, 'system')
+  assert.equal(msgs[0]!.content, (evt.payload as { summary: string }).summary, '首条 = 摘要')
+  const userMsgs = msgs.filter(m => m.role === 'user').map(m => String(m.content))
+  for (const t of [67, 68, 69, 70]) assert.ok(userMsgs.includes(`用户问题 ${t}`), `保护段 T${t} 原样保留`)
+  assert.equal(userMsgs.some(c => /^用户问题 ([1-9]|[1-5][0-9]|6[0-6])$/.test(c)), false, '被折叠 turn 不再现')
+  assert.match(JSON.stringify(log.events), /用户问题 1/, '原事件仍在链上（折叠只在投影层）')
+  assert.equal(shouldCompact(log, { enabled: true }), false, '压缩后从边界重新计数（不足 200）')
+})

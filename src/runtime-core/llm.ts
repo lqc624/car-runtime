@@ -563,7 +563,16 @@ function mergeAnthropicUsage(
  * toolResult 收敛进 user 消息 content（连续多条合并为单 user 多 tool_result 块——Anthropic
  * 消息序列约束）；assistant 工具调用 = content:[{type:'tool_use',id,name,input}]；
  * declaredSideEffect 不出站（与 openai-compat 同红线）。
+ * 1.17-K4（D-48 P1）：system 以单块数组出站并挂 `cache_control: ephemeral` 断点（稳定前缀
+ * 缓存——首个 system 恒不进折叠区间，锚点天然稳定）。断点 = 传输层注解：不进 SessionLog/
+ * 投影/快照比对，N1 零影响；生效有 provider 侧最小长度门槛（~1024 tokens）——短 system
+ * 静默不生效应以 usage.cacheCreationTokens 观测，禁以「配了就该生效」推断。关断 =
+ * CAR_LLM_PROMPT_CACHE=off（cli flag --no-prompt-cache 置本 env；A/B 与故障回退通道）。
  */
+function promptCacheOff(): boolean {
+  return process.env.CAR_LLM_PROMPT_CACHE === 'off'
+}
+
 function toAnthropic(req: LlmRequest, apiKey: string) {
   const system: string[] = []
   const turns: Array<{ role: 'user' | 'assistant'; content: unknown }> = []
@@ -618,7 +627,14 @@ function toAnthropic(req: LlmRequest, apiKey: string) {
       stream: true,
       max_tokens: maxTokens,
       ...(thinkingBudget !== undefined ? { thinking: { type: 'enabled', budget_tokens: thinkingBudget } } : {}),
-      ...(system.length ? { system: system.join('\n\n') } : {}),
+      // D-48 P1：缺省单块 + ephemeral 断点；关断 = 顶层字符串（1.16.x 前形态，A/B 与回退）
+      ...(system.length
+        ? {
+            system: promptCacheOff()
+              ? system.join('\n\n')
+              : [{ type: 'text', text: system.join('\n\n'), cache_control: { type: 'ephemeral' } }],
+          }
+        : {}),
       messages: turns,
       ...(req.tools.length
         ? { tools: req.tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })) }

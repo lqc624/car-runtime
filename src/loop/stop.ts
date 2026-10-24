@@ -57,8 +57,19 @@ export interface TurnPreset {
   maxSteps?: number
   /** F13：OR/AND 收口可配置（默认 any/all = M1 行为等价） */
   aggregate?: { concludesTurn?: 'any' | 'all'; terminate?: 'any' | 'all' }
-  /** F13：授权拒绝即收口 blocked（默认 false = 模型继续调整） */
+  /** F13：授权拒绝即收口 blocked（默认 false = 模型继续调整）；1.17-K4（V2-a）缺省随档位收敛——readonly 恒 true（显式传参可覆盖） */
   blockOnDeny?: boolean
+  /**
+   * 1.17-K4（D-50 / G8）：拒绝累计熔断——同 turn denies 累计 ≥ N 即收口 blocked（gate:'denyBreaker'）。
+   * 缺省 3（预防性闸门：真实样本从未超过 1 次/turn——设计 §10.4-3 诚实定位）；0 = 关。
+   */
+  denyBreaker?: number
+  /**
+   * 1.17-K4（D-50 / G9）：重复失败熔断——失败签名（tool + 归一化错误串）同 turn 连续 ≥ N 后，
+   * 下一次同签名不再派发（成对补记 no-dispatch 事件）并收口 blocked（gate:'repeatFailureBreaker'）。
+   * 异签名放行（允许探索，禁撞墙）；成功派发重置连击。缺省 2；0 = 关。
+   */
+  repeatFailureBreaker?: number
 }
 
 export interface TurnResult { reason: TurnEndReason; steps: number; endReasonTrail: Array<{ seq: number; reason: TurnEndReason }> }
@@ -117,12 +128,35 @@ export async function runTurn(opts: {
     return log.append('runtime', 'turnEnd', turnId, null, { ...meta, ...(usage ? { usage } : {}) })
   }
 
-  const executeBatch = async (calls: ToolCall[]): Promise<{ concludesTurn: boolean; concludesAll: boolean; terminateVotes: number; terminateAll: boolean; finalized: number; denies: number }> => {
+  // 1.17-K4（D-50 / V2-a）：blockOnDeny 缺省随档位收敛——readonly 恒 true（拒绝即收口，禁在
+  // 错误理解模式的路上烧 token；「看一眼再决定」应切 confirm——三档设计本义）；confirm/full
+  // 缺省 false 不变；显式传参可覆盖任何档位
+  const blockOnDeny = preset.blockOnDeny ?? preset.mode === 'readonly'
+  // 1.17-K4（D-50）：G8/G9 熔断阈值（缺省 3/2；0 = 关——A/B 与回退通道）
+  const denyBreaker = preset.denyBreaker ?? 3
+  const repeatFailureBreaker = preset.repeatFailureBreaker ?? 2
+  let totalDenies = 0
+  // G9 失败签名连击（turn 级）：成功派发重置；授权拒绝不重置（拒绝 ≠ 探索进展）
+  let lastSignature: string | null = null
+  let lastFailureTool: string | null = null
+  let signatureStreak = 0
+  /** 失败签名 = tool + 归一化错误串（去空白/时间戳/长 hex id、截断 200——确定性好比对） */
+  const failureSignature = (tool: string, err: string) =>
+    (tool + ':' + err.replace(/\s+/g, ' ').replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, '<ts>').replace(/\b[0-9a-f]{8,}\b/g, '<id>')).slice(0, 200)
+  const advanceStreak = (tool: string, err: string) => {
+    const sig = failureSignature(tool, err)
+    if (sig === lastSignature) signatureStreak++
+    else { lastSignature = sig; signatureStreak = 1 }
+    lastFailureTool = tool
+  }
+
+  const executeBatch = async (calls: ToolCall[]): Promise<{ concludesTurn: boolean; concludesAll: boolean; terminateVotes: number; terminateAll: boolean; finalized: number; denies: number; breakerTripped: string | null }> => {
     let concludesTurn = false
     let concludesVotes = 0
     let terminateVotes = 0
     let finalized = 0
     let denies = 0
+    let breakerTripped: string | null = null
     for (const call of calls) {
       if (signal?.aborted) {
         // 取消：未派发调用补记成对事件（日志无缺口）
@@ -132,8 +166,23 @@ export async function runTurn(opts: {
       }
       const def = tools.get(call.tool)
       log.append('model', 'toolCall', turnId, call)
+      // G9（D-50）熔断预检：同签名连击已达阈值且本次同工具 → 不再派发（错误串须派发方知，
+      // 预检口径 = 同工具紧邻重试——换工具探索不受影响；换参数异错误的甄别发生在 streak < 阈值期）。
+      // 未派发也成对落链（与取消补记同纪律——日志无缺口），breakerTripped 交主循环收口。
+      // 位置在 def 查找前：unknown tool 连击（def 缺失分支 continue）同样要被拦
+      if (repeatFailureBreaker > 0 && signatureStreak >= repeatFailureBreaker && lastFailureTool === call.tool) {
+        log.append('runtime', 'toolResult', turnId, {
+          id: call.id,
+          error: 'repeated-identical-failure: breaker tripped (no dispatch)',
+          signature: lastSignature,
+        })
+        breakerTripped = lastSignature
+        continue
+      }
       if (!def) {
         log.append('plugin', 'toolResult', turnId, { id: call.id, error: `unknown tool "${call.tool}"` })
+        // G9：unknown tool 同为失败面（模型反复叫错工具名 = 撞墙形态之一）
+        advanceStreak(call.tool, `unknown tool "${call.tool}"`)
         continue
       }
       // 权限门（F4 集成点）：write 类在 readonly/confirm 模式需放行；1.13.0（K-FS-1）：
@@ -156,6 +205,10 @@ export async function runTurn(opts: {
         toolError = String(e)
       }
       log.append('plugin', 'toolResult', turnId, { id: call.id, result, ...(toolError ? { error: toolError } : {}) })
+      // G9 连击推进：同签名 streak++，异签名重开（允许探索——换参数后不同错误 = 不同签名）；
+      // 成功派发重置（拒绝不重置——拒绝 ≠ 探索进展）
+      if (toolError) advanceStreak(call.tool, toolError)
+      else { lastSignature = null; lastFailureTool = null; signatureStreak = 0 }
       finalized++
       if (def.concludesTurn) { concludesTurn = true; concludesVotes++ }
       if (def.terminate) terminateVotes++
@@ -163,7 +216,7 @@ export async function runTurn(opts: {
     return {
       concludesTurn, concludesAll: finalized > 0 && concludesVotes === finalized,
       terminateVotes, terminateAll: finalized > 0 && terminateVotes === finalized,
-      finalized, denies,
+      finalized, denies, breakerTripped,
     }
   }
 
@@ -208,9 +261,25 @@ export async function runTurn(opts: {
 
       if (step.stopReason === 'toolUse' && step.toolCalls?.length) {
         const batch = await executeBatch(step.toolCalls)
-        // F13：授权拒绝即收口（blockOnDeny 产出点——blocked 仅新增产出点，枚举不增）
-        if (preset.blockOnDeny && batch.denies > 0) {
+        totalDenies += batch.denies
+        // F13：授权拒绝即收口（blockOnDeny 产出点——blocked 仅新增产出点，枚举不增）；
+        // 1.17-K4（V2-a）：blockOnDeny 缺省随档位（readonly 恒 true）——G6 单次拒绝即收口，
+        // 开则 G8 无机会触发（设计 §5.4 共存口径）
+        if (blockOnDeny && batch.denies > 0) {
           const seq = closeTurn({ reason: 'blocked', denies: batch.denies }).seq
+          trail.push({ seq, reason: 'blocked' })
+          return { reason: 'blocked', steps, endReasonTrail: trail }
+        }
+        // G8（D-50）：拒绝累计熔断——同 turn denies 累计 ≥ 阈值收口 blocked（止损优先于
+        // conclude/terminate 判定；denies 为 turn 级累计跨 batch）
+        if (denyBreaker > 0 && totalDenies >= denyBreaker) {
+          const seq = closeTurn({ reason: 'blocked', denies: totalDenies, gate: 'denyBreaker' }).seq
+          trail.push({ seq, reason: 'blocked' })
+          return { reason: 'blocked', steps, endReasonTrail: trail }
+        }
+        // G9（D-50）：重复失败熔断——executeBatch 已补记 no-dispatch 成对事件，此处收口
+        if (batch.breakerTripped) {
+          const seq = closeTurn({ reason: 'blocked', gate: 'repeatFailureBreaker', signature: batch.breakerTripped }).seq
           trail.push({ seq, reason: 'blocked' })
           return { reason: 'blocked', steps, endReasonTrail: trail }
         }

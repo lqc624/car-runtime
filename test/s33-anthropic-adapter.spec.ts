@@ -130,7 +130,12 @@ test('S33: anthropic 出站体——x-api-key/anthropic-version 头 + system 顶
   assert.equal(body.model, 'claude-x')
   assert.equal(body.stream, true)
   assert.equal(body.max_tokens, 4096, 'D-20：Anthropic max_tokens 必填——req 缺省 4096')
-  assert.equal(body.system, '规则一\n\n规则二', 'system 消息提升顶层，多条 \\n\\n 连接')
+  // 1.17-K4（D-48 P1）：system 缺省 = 单块数组 + ephemeral 断点（原顶层字符串形态移 CAR_LLM_PROMPT_CACHE=off 关断通道）
+  assert.deepEqual(
+    body.system,
+    [{ type: 'text', text: '规则一\n\n规则二', cache_control: { type: 'ephemeral' } }],
+    'system 顶层化单块数组 + cache_control 断点（多条 \\n\\n 连接进块文本）',
+  )
   assert.ok(!('system' in body.messages[0]), 'system 不再以消息形态出站')
   assert.deepEqual(body.messages, [{ role: 'user', content: 'hi' }])
   assert.deepEqual(body.tools, [{ name: 'echo', description: '回声', input_schema: { type: 'object', properties: { t: { type: 'string' } } } }], 'tools → input_schema；declaredSideEffect 不出站')
@@ -339,7 +344,8 @@ test('S33: spawn CLI 全链——car run --adapter-id anthropic（x-api-key / sy
     // 请求 1：anthropic 出站体（system 顶层 / input_schema / x-api-key 凭据 / 版本头）
     assert.equal(headers[0]['x-api-key'], TEST_KEY, '凭据经 CredentialService→x-api-key')
     assert.equal(headers[0]['anthropic-version'], '2023-06-01')
-    assert.equal(bodies[0].system, '你是 CLI 集成测试助手', '--system 落链（system 事件）→ 顶层 system')
+    assert.equal(bodies[0].system[0].text, '你是 CLI 集成测试助手', '--system 落链（system 事件）→ 顶层 system 单块')
+    assert.equal(bodies[0].system[0].cache_control?.type, 'ephemeral', 'D-48 P1：CLI 生产路径断点在位')
     assert.equal(JSON.stringify(bodies[0]).includes(TEST_KEY), false, '凭据值不出站到消息体')
     assert.equal(bodies[0].tools[0].name, 'echo_tool')
     assert.equal(bodies[0].tools[0].input_schema.properties.text.type, 'string')

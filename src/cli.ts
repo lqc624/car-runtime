@@ -41,6 +41,8 @@ const HELP = `用法: car <command> [args]
                                     装配并运行插件（快速上手流；装载前签名门 warn 缺省）
                                     真路径：--prompt <text> + --base-url/--model（或 llm.* 配置）；
                                     --adapter-id anthropic = Messages API（凭据 ANTHROPIC_API_KEY）；
+                                    --no-prompt-cache = 关断 anthropic 稳定前缀缓存断点（D-48；
+                                    等价 env CAR_LLM_PROMPT_CACHE=off，A/B 与回退通道）；
                                     --demo = stub 演示流
   reload <file|dir> [--sig-enforce] [--config <path>]
                                     热重载插件并打印六阶段加载报告（含 verify 签名门）
@@ -206,6 +208,9 @@ async function main(): Promise<number> {
         const cfgBaseUrl = llm.baseUrl
         const cfgModel = llm.model
         let modelName = cfgModel ?? ''
+        // 1.17-K4（D-48 P1 / V1-A）：提示缓存断点关断 flag——flag > env（置 env 后适配器内部决策；
+        // 池/单端点两分支通用，须先于适配器创建）
+        if (rest.includes('--no-prompt-cache')) process.env.CAR_LLM_PROMPT_CACHE = 'off'
         const credService = new CredentialService()
         const core = new RuntimeCore(credService)
         core.bindContext(ctx)
