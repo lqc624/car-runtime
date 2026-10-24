@@ -38,8 +38,10 @@ export interface SandboxSigConfig {
 export interface CompactionConfig {
   /** 缺省 false = 行为零变化（1.13 兼容线） */
   enabled?: boolean
-  /** 距上次压缩的新增事件数阈值（事实计数非估算）；缺省 200 */
+  /** 距上次压缩以来的新增事件数阈值（事实计数非估算）；缺省 200 */
   thresholdEvents?: number
+  /** 1.18-K5（D-51）：token 维度阈值（provider 报告事实，非估算）；与事件阈值 OR；缺省缺席不生效 */
+  thresholdTokens?: number
   /** 保护最近 N 个 turn 不折叠；缺省 4 */
   protectLastTurns?: number
 }
@@ -239,10 +241,13 @@ const rawSchema = z.object({
       .refine(v => Number.isFinite(v) && Number.isInteger(v) && v > 0, { message: '必须为正整数' })
       .optional(),
     allowEnvFallback: z.boolean({ invalid_type_error: '必须为布尔', required_error: '必须为布尔' }).optional(),
-    // 1.14-S2（K-MP-2 / D-40）：历史压缩策略（阈值事实计数，非 token 估算）
+    // 1.14-S2（K-MP-2 / D-40）：历史压缩策略（阈值事实计数，非 token 估算）；
+    // 1.18-K5（D-51）：thresholdTokens = provider 报告事实维度（最近 usage 全上下文，非估算）
     compaction: z.object({
       enabled: z.boolean({ invalid_type_error: '必须为布尔', required_error: '必须为布尔' }).optional(),
       thresholdEvents: z.number({ invalid_type_error: '必须为正整数', required_error: '必须为正整数' })
+        .refine(v => Number.isInteger(v) && v > 0, { message: '必须为正整数' }).optional(),
+      thresholdTokens: z.number({ invalid_type_error: '必须为正整数', required_error: '必须为正整数' })
         .refine(v => Number.isInteger(v) && v > 0, { message: '必须为正整数' }).optional(),
       protectLastTurns: z.number({ invalid_type_error: '必须为正整数', required_error: '必须为正整数' })
         .refine(v => Number.isInteger(v) && v > 0, { message: '必须为正整数' }).optional(),
@@ -308,6 +313,7 @@ function parseCarConfig(raw: unknown): { config: CarConfig; error?: string } {
       const cp: CompactionConfig = {}
       if (d.llm.compaction.enabled !== undefined) cp.enabled = d.llm.compaction.enabled
       if (d.llm.compaction.thresholdEvents !== undefined) cp.thresholdEvents = d.llm.compaction.thresholdEvents
+      if (d.llm.compaction.thresholdTokens !== undefined) cp.thresholdTokens = d.llm.compaction.thresholdTokens
       if (d.llm.compaction.protectLastTurns !== undefined) cp.protectLastTurns = d.llm.compaction.protectLastTurns
       llm.compaction = cp
     }

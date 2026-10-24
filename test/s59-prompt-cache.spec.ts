@@ -172,7 +172,7 @@ test('S59: CLI 生产路径——car run --no-prompt-cache → 出站体回字�
       '--prompt', 'hi', '--base-url', `http://127.0.0.1:${port}`, '--model', 'claude-cli',
       '--system', '你是缓存关断测试助手', '--no-prompt-cache'], {
       cwd: dir,
-      env: { ...process.env, ANTHROPIC_API_KEY: 'test-key-123', CAR_ALLOW_ENV_CREDENTIALS: '1', CAR_LLM_PROMPT_CACHE: undefined },
+      env: { ...process.env, ANTHROPIC_API_KEY: 'test-key-1', CAR_ALLOW_ENV_CREDENTIALS: '1', CAR_LLM_PROMPT_CACHE: undefined },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''

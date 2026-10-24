@@ -16,8 +16,9 @@
  *    禁静默成功；摘要生成产物非非空字符串 → CAR-E-COMPACT-SUMMARY 显式报错；
  *  - **零新依赖**：摘要缺省为确定性生成器（轮次意图 + 工具调用统计 + 收口状态——事实拼装，
  *    禁估算）；宿主可注入 LLM 摘要（summarize 缝——内核不依赖 LLM 做压缩）；
- *  - **触发面**：shouldCompact 判定（thresholdEvents 事实计数，非 token 估算）+ applyCompaction
- *    立即 API；自动挂载点在宿主装配层（runTurn 之间调用，内核不改 runTurn 语义）。
+ *  - **触发面**：shouldCompact 判定（thresholdEvents 事实计数 + thresholdTokens provider 报告
+ *    事实——两维度均禁 tokenizer 估算）+ applyCompaction 立即 API；自动挂载点在宿主装配层
+ *    （runTurn 之间调用，内核不改 runTurn 语义）。
  */
 import type { SessionEvent, SessionLog } from './log.ts'
 
@@ -26,6 +27,17 @@ export interface CompactionConfig {
   enabled?: boolean
   /** 距上次压缩以来的新增事件数阈值（事实计数，非 token 估算）；缺省 200 */
   thresholdEvents?: number
+  /**
+   * 1.18-K5（D-51）：token 维度阈值——事实源 = 链上最近一条 'usage' 事件（provider 报告，
+   * 禁 tokenizer 估算）的 input + cacheRead + cacheCreation 之和（两族归一化后统一口径
+   * = 最近一次请求的全上下文：openai prompt_tokens 含 cached 已减法归一、anthropic
+   * input_tokens 天然不含 cache——types.ts §1.1）。与 thresholdEvents **任一命中即触发**（OR）。
+   * 缺省缺席 = 行为零变化；≤ 0 不生效。补的缺口：真实使用若长期 10~30 轮，事件阈值
+   * 永不触及而上下文持续增长到撞 provider 上限（设计 §10.4-2 附带发现）。
+   * 子链甄别（实核消解）：K2 子 Agent 子链为独立 SessionLog，其 usage 事件只落子链
+   * （汇总走 system kind 防双计）——主链日志内 'usage' 事件必然全部来自主链请求，无污染。
+   */
+  thresholdTokens?: number
   /** 保护最近 N 个 turn 不折叠；缺省 4 */
   protectLastTurns?: number
 }
@@ -50,11 +62,27 @@ function lastCompactedUpTo(log: SessionLog): number {
   return last
 }
 
-/** shouldCompact：距上次压缩的新增事件数 ≥ thresholdEvents（enabled 缺省关 = 零变化） */
+/**
+ * shouldCompact：事件阈值 OR token 阈值任一命中（enabled 缺省关 = 零变化）。
+ * 事件维度 = 距上次压缩的新增事件数 ≥ thresholdEvents；
+ * token 维度（D-51）= 最近一条 usage 事实的全上下文（input+cacheRead+cacheCreation）
+ * ≥ thresholdTokens——无 usage（首轮前）不触发；非数值字段容错按 0（stop.ts 聚合同纪律）。
+ */
 export function shouldCompact(log: SessionLog, cfg: CompactionConfig | undefined): boolean {
   if (!cfg || cfg.enabled !== true) return false
   const threshold = cfg.thresholdEvents ?? 200
-  return log.events.length - lastCompactedUpTo(log) >= threshold
+  if (log.events.length - lastCompactedUpTo(log) >= threshold) return true
+  const thresholdTokens = cfg.thresholdTokens
+  if (typeof thresholdTokens === 'number' && thresholdTokens > 0) {
+    for (let i = log.events.length - 1; i >= 0; i--) {
+      const e = log.events[i]!
+      if (e.kind !== 'usage') continue
+      const p = (e.payload ?? {}) as { input?: unknown; cacheRead?: unknown; cacheCreation?: unknown }
+      const num = (v: unknown) => (typeof v === 'number' ? v : 0)
+      return num(p.input) + num(p.cacheRead) + num(p.cacheCreation) >= thresholdTokens
+    }
+  }
+  return false
 }
 
 /**
