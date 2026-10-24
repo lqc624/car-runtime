@@ -65,8 +65,9 @@ const HELP = `用法: car <command> [args]
 CAR_UNSIGNED_ALLOW=1 显式声明豁免（warn 缺签路径计数 confirmed=yes，横幅保留）
 配置文件通道（1.5 起双载体）：cwd car.config.ts（export default {…}；发现序 ts > json）或
 car.config.json 或 --config <path>；键位 sandbox.unsigned.allow / sandbox.sig.enforce /
-sandbox.sig.trustRoot / llm.* / llm.modelPool.*（多端点 fallback：endpoints id/baseUrl/model/
-adapterId/keyEnv/priority/weight/maxTokens + probe + maxAttempts；路由决策落链）/ mcp.servers.*
+sandbox.sig.trustRoot / llm.* / modelPool.*（多端点 fallback：endpoints id/baseUrl/model/
+adapterId/keyEnv/priority/weight/maxTokens + probe + maxAttempts；路由决策落链）/ llm.subagent.*
+（子 Agent：model 独立锚点 / maxConcurrent / maxCumulative 护栏上限）/ mcp.servers.*
 （stdio: command/args/env；远程: url/headers，\${ENV_VAR} 引用注入凭据）；优先级 flag > env > 配置 > 缺省；未知键 fail-visible`
 
 // 进程内热重载会话（ReloadManager 持有 epoch 与实例注册表；同进程连续 reload 语义完整）
@@ -232,7 +233,7 @@ async function main(): Promise<number> {
             console.error('CAR-E-LLM-CONFIG: 真实模型路径需要 baseUrl + model——')
             console.error('  配置：car.config.ts（export default）或 car.config.json {"llm":{"baseUrl":"https://…","model":"…"}} / env CAR_LLM_BASE_URL+CAR_LLM_MODEL / flag --base-url --model')
             console.error('  anthropic：llm.adapterId "anthropic"（或 --adapter-id anthropic）+ baseUrl https://api.anthropic.com；凭据 ANTHROPIC_API_KEY')
-            console.error('  模型池：llm.modelPool.endpoints（多端点 fallback + health 预检；凭据 keyEnv 引用；路由决策落链）')
+            console.error('  模型池：modelPool.endpoints（多端点 fallback + health 预检；凭据 keyEnv 引用；路由决策落链）')
             console.error('  凭据：OPENAI_API_KEY / ANTHROPIC_API_KEY（env fallback 需 CAR_ALLOW_ENV_CREDENTIALS=1 或 llm.allowEnvFallback）或 keychain；诊断：car doctor')
             return 2
           }

@@ -52,6 +52,18 @@ export interface LlmConfig {
   allowEnvFallback?: boolean
   /** 1.14-S2（K-MP-2 / D-40）：历史压缩策略（阈值自动触发判定入参；立即压缩 API 独立可用） */
   compaction?: CompactionConfig
+  /** 1.16-K3（D-K2-2）：子 Agent 配置（缺省 = 继承父会话模型锚点 Q-A2 + 宿主护栏常量 Q-A3） */
+  subagent?: SubagentConfig
+}
+
+/** 1.16-K3（D-K2-2）：子 Agent 配置面——宿主编排消费（内核自身不装配编排；schema 只登记键位） */
+export interface SubagentConfig {
+  /** 独立子模型锚点（缺省 = 继承父会话现值；modelPool 激活时被池压过——与 llm.model 同口径） */
+  model?: string
+  /** 并发子 Agent 上限（正整数；缺省 = 宿主常量 3，Q-A3） */
+  maxConcurrent?: number
+  /** 单父会话累计派生上限（正整数；缺省 = 宿主常量 10，Q-A3） */
+  maxCumulative?: number
 }
 
 /** 1.14-S4（K-POOL-1 / D-42）：模型池端点登记（多端点 fallback 候选；凭据仅收 keyEnv 引用） */
@@ -235,6 +247,18 @@ const rawSchema = z.object({
       protectLastTurns: z.number({ invalid_type_error: '必须为正整数', required_error: '必须为正整数' })
         .refine(v => Number.isInteger(v) && v > 0, { message: '必须为正整数' }).optional(),
     }).strict().optional(),
+    // 1.16-K3（D-K2-2）：子 Agent 配置（model 独立锚点 + 护栏上限；空对象无意义显式拒——禁静默 no-op）
+    subagent: z.object({
+      model: nonEmptyTrimmed().optional(),
+      maxConcurrent: z.number({ invalid_type_error: '必须为正整数', required_error: '必须为正整数' })
+        .refine(v => Number.isFinite(v) && Number.isInteger(v) && v > 0, { message: '必须为正整数' })
+        .optional(),
+      maxCumulative: z.number({ invalid_type_error: '必须为正整数', required_error: '必须为正整数' })
+        .refine(v => Number.isFinite(v) && Number.isInteger(v) && v > 0, { message: '必须为正整数' })
+        .optional(),
+    }).strict()
+      .refine(v => Object.keys(v).length > 0, { message: '至少登记一个键（model/maxConcurrent/maxCumulative；无子 Agent 配置需求请移除 llm.subagent 键，行为与 1.15.2 一致）' })
+      .optional(),
   }).strict().optional(),
   // 1.14-S4（K-POOL-1 / D-42）：模型池登记（多端点 fallback + health + routing/decide 落链）
   modelPool: modelPoolSchema.optional(),
@@ -243,8 +267,8 @@ const rawSchema = z.object({
   }).strict().optional(),
 }, { invalid_type_error: '配置顶层必须为 JSON 对象' }).strict()
 
-/** 未登记键提示（渲染层拼 path）——与系统设计键位空间同步 */
-const KEY_SPACES = '登记键位：sandbox.* / llm.* / llm.modelPool.* / mcp.servers.*'
+/** 未登记键提示（渲染层拼 path）——与系统设计键位空间同步；D-1 勘误：modelPool 为顶层键（非 llm.modelPool） */
+const KEY_SPACES = '登记键位：sandbox.* / llm.* / modelPool.* / llm.subagent.* / mcp.servers.*'
 
 /** zod issue → CAR-E-CONFIG 渲染（首个 issue；unrecognized_keys 按键路径展开） */
 function renderIssue(error: z.ZodError): string {
@@ -286,6 +310,13 @@ function parseCarConfig(raw: unknown): { config: CarConfig; error?: string } {
       if (d.llm.compaction.thresholdEvents !== undefined) cp.thresholdEvents = d.llm.compaction.thresholdEvents
       if (d.llm.compaction.protectLastTurns !== undefined) cp.protectLastTurns = d.llm.compaction.protectLastTurns
       llm.compaction = cp
+    }
+    if (d.llm.subagent) {
+      const sg: SubagentConfig = {}
+      if (d.llm.subagent.model !== undefined) sg.model = d.llm.subagent.model
+      if (d.llm.subagent.maxConcurrent !== undefined) sg.maxConcurrent = d.llm.subagent.maxConcurrent
+      if (d.llm.subagent.maxCumulative !== undefined) sg.maxCumulative = d.llm.subagent.maxCumulative
+      llm.subagent = sg
     }
     out.llm = llm
   }
