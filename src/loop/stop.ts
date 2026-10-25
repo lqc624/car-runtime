@@ -125,7 +125,15 @@ export async function runTurn(opts: {
   // 缺省=未采集向后兼容）；reason 保持 meta 首键，usage 恒为加法尾键
   const closeTurn = (meta: Record<string, unknown>) => {
     const usage = turnUsageFrom(log, turnId)
-    return log.append('runtime', 'turnEnd', turnId, null, { ...meta, ...(usage ? { usage } : {}) })
+    // 1.18.2-K8（R-K7-2）：计量缺失 fail-visible——商汤网关实测 20% 概率 message_delta
+    // 不带 usage（流正常回复但计量整条缺席）→ 缺失口径纪律不落半条事实（turnUsageFrom
+    // undefined），缺失本身在此显式标注：本 turn 存在 assistant 事件（模型有可见输出 ⇒
+    // 必有请求）而无 usage 聚合时带 usageMissing: true（加法尾键，与 usage 同语义位）
+    const hasAssistant = log.events.some((e) => e.kind === 'assistant' && e.turnId === turnId)
+    return log.append('runtime', 'turnEnd', turnId, null, {
+      ...meta,
+      ...(usage ? { usage } : hasAssistant ? { usageMissing: true } : {}),
+    })
   }
 
   // 1.17-K4（D-50 / V2-a）：blockOnDeny 缺省随档位收敛——readonly 恒 true（拒绝即收口，禁在

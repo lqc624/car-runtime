@@ -91,7 +91,7 @@ test('s46: runTurn turnEnd 聚合——两请求四分量求和 + requests 计�
   assert.equal(log.verifyChain(), null)
 })
 
-test('s46: 无 usage → meta 不带 usage 键（向后兼容）；跨 turn 事实不串（turnId 过滤）', async () => {
+test('s46: 无 usage → 不带 usage 键但带 usageMissing: true（1.18.2 R-K7-2）；跨 turn 事实不串（turnId 过滤）', async () => {
   const log = new SessionLog('s46-compat')
   // T0 的 usage 事实先在链上（模拟早前 turn）——T1 收口不得把它聚合进来
   log.append('runtime', 'usage', 'T0', { model: 'm', adapterId: 'x', input: 999, output: 999, cacheRead: 0, cacheCreation: 0, providerRaw: {} })
@@ -104,7 +104,9 @@ test('s46: 无 usage → meta 不带 usage 键（向后兼容）；跨 turn 事�
   })
   assert.equal(result.reason, 'completed')
   const turnEnd = log.events.filter(e => e.kind === 'turnEnd').at(-1)!
-  assert.deepEqual(turnEnd.meta, { reason: 'completed' }, '无本 turn usage 事件 → meta 不带 usage 键；T0 事实不跨 turn 串入')
+  // 1.18.2-K8（R-K7-2）：模型有可见输出（assistant 在 ⇒ 必有请求）而计量整条缺席 →
+  // 缺失口径纪律不落半条事实，缺失本身 fail-visible（usageMissing 加法尾键）
+  assert.deepEqual(turnEnd.meta, { reason: 'completed', usageMissing: true }, '无本 turn usage 事件 → meta 不带 usage 键但显式标注缺失；T0 事实不跨 turn 串入')
 })
 
 test('s46: max-tokens turn——截断请求的 usage 照常落链（撞限不吞用量）', async () => {
