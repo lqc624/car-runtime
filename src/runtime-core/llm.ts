@@ -536,6 +536,11 @@ const ANTHROPIC_STOP_REASON_MAP: Record<string, LlmChunk['finishReason']> = {
  * input_tokens 天然不含 cache + cache_read/cache_creation）+ message_delta（output 侧：
  * output_tokens）。任一包缺席或主字段非数值 = 侧不完整，整条不落（缺失口径，禁补造半条事实）；
  * providerRaw 保留两原始片段供审计对拍。
+ * 1.18.1-K6-A：网关形态兼容——商汤网关（装机会话实证 2026-10-25）把 input 侧三键放
+ * message_delta（message_start.input_tokens 常为 0，真实 input/cache_read 在 delta），
+ * 官方形态 delta 仅 output_tokens。判别式 = delta 是否携带任一 input 侧键；input 侧
+ * 整体取自单一来源（不混取两包、不估算），D-51 thresholdTokens 事实源
+ * （input+cacheRead+cacheCreation 之和）在两形态下同为 provider 报告的全上下文。
  */
 function mergeAnthropicUsage(
   start: Record<string, unknown> | null,
@@ -544,14 +549,20 @@ function mergeAnthropicUsage(
   adapterId: string,
 ): LlmUsage | undefined {
   if (!start || !delta) return undefined
-  if (typeof start.input_tokens !== 'number' || typeof delta.output_tokens !== 'number') return undefined
+  if (typeof delta.output_tokens !== 'number') return undefined
+  const deltaHasInputSide =
+    typeof delta.input_tokens === 'number' ||
+    typeof delta.cache_read_input_tokens === 'number' ||
+    typeof delta.cache_creation_input_tokens === 'number'
+  const inputSrc = deltaHasInputSide ? delta : start
+  if (typeof inputSrc.input_tokens !== 'number') return undefined
   // 1.14-S3（K-MP-2b / D-41）：anthropic 无输出细分事实（thinking 计入 output_tokens）→
   // segments 不带键（禁估算补造——桌面色条退化单色，登记口径）
   return {
-    inputTokens: start.input_tokens,
+    inputTokens: inputSrc.input_tokens,
     outputTokens: delta.output_tokens,
-    cacheReadTokens: typeof start.cache_read_input_tokens === 'number' ? start.cache_read_input_tokens : 0,
-    cacheCreationTokens: typeof start.cache_creation_input_tokens === 'number' ? start.cache_creation_input_tokens : 0,
+    cacheReadTokens: typeof inputSrc.cache_read_input_tokens === 'number' ? inputSrc.cache_read_input_tokens : 0,
+    cacheCreationTokens: typeof inputSrc.cache_creation_input_tokens === 'number' ? inputSrc.cache_creation_input_tokens : 0,
     model,
     adapterId,
     providerRaw: { messageStart: start, messageDelta: delta },
