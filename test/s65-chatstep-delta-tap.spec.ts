@@ -56,19 +56,19 @@ test('s65: textDelta 之和 + flush 尾巴 ≡ 落链 assistant 全文（尾部�
 test('s65: 增量经 StreamRedactor——密钥原文零泄漏（遮蔽串出现，原文任何片段不出现在回调）', async () => {
   const log = new SessionLog('s65-redact')
   log.append('user', 'user', 'T1', 'hi')
-  const secret = 'sk-live-abc123def456ghi789'
+  const credCanary = 'sk-live-abc123def456ghi789'
   const core = coreWith('fake-secret', [[
     { delta: '密钥是 ' },
-    { delta: secret.slice(0, 10) },
-    { delta: secret.slice(10) + ' 请妥善保管。' },
+    { delta: credCanary.slice(0, 10) },
+    { delta: credCanary.slice(10) + ' 请妥善保管。' },
     { finishReason: 'stop' },
   ]])
   const seen: Delta[] = []
   await chatStep({ core, log, turnId: 'T1', model: 'm1', tools: [], onDelta: (d) => seen.push(d) })
   const streamed = seen.map((d) => d.textDelta ?? '').join('')
   const logged = log.events.filter((e) => e.kind === 'assistant').at(-1)!.payload as string
-  assert.ok(!streamed.includes(secret), '流式增量不含密钥原文（遮蔽生效）')
-  assert.ok(!logged.includes(secret), '落链全文同样遮蔽（既有语义不变）')
+  assert.ok(!streamed.includes(credCanary), '流式增量不含密钥原文（遮蔽生效）')
+  assert.ok(!logged.includes(credCanary), '落链全文同样遮蔽（既有语义不变）')
   assert.equal(streamed, logged, '遮蔽后的流式增量与落链全文收敛一致')
 })
 
