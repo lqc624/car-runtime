@@ -43,6 +43,18 @@ export interface ChatStepOptions {
    * 模型元数据思考档位判断在宿主侧（models:meta），内核防线 = 未知档位 fail-visible。
    */
   reasoning?: { effort: 'off' | 'low' | 'medium' | 'high' }
+  /**
+   * 1.19.0（D-S2-1 渲染提示面）：流式增量回调——宿主实时上屏数据源（发送后不空等的
+   * 流式交互）。语义红线：
+   *  - textDelta = StreamRedactor.push 的已遮蔽放行（跨 chunk 遮蔽驻留期 UI 略滞后——
+   *    粒度换正确性），流尾 flush 残段同样回调；全部 textDelta 之和 + flush 尾巴
+   *    ≡ 落链 assistant 全文（收敛一致，屏幕无第二事实源）；
+   *  - toolName = 工具名首次可知时机（args 仍在流式聚合——半截 JSON 不解析，ADR-001
+   *    同纪律）；同请求同名只回调一次；
+   *  - 纯渲染提示：不落链、不持久、不影响 ModelStep 与 N1（事实本体仍以落盘行为准，
+   *    assistant 事件到达前 UI 呈现的增量属临时态）；缺省（undefined）= 零行为变化。
+   */
+  onDelta?: (d: { textDelta?: string; toolName?: string }) => void
 }
 
 /** ModelStep 加法扩展：脱敏计数留痕（S15 secretsRedacted 同名口径） */
@@ -95,12 +107,20 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
   for await (const chunk of stream) {
     // 1.4-S4（D-19）：chunk 间隙取消——此刻 assistant 尚未落链（流完才 append），无半截消息
     if (opts.signal?.aborted) throw new TurnAborted()
-    if (chunk.delta !== undefined) text += redactor.push(chunk.delta)
+    if (chunk.delta !== undefined) {
+      const masked = redactor.push(chunk.delta)
+      text += masked
+      if (masked && opts.onDelta) opts.onDelta({ textDelta: masked })
+    }
     if (chunk.toolCallDelta) {
       const idx = chunk.toolCallDelta.index ?? 0
       const cur = calls.get(idx) ?? { argsBuf: '' }
       if (chunk.toolCallDelta.id) cur.id = chunk.toolCallDelta.id
-      if (chunk.toolCallDelta.name) cur.name = chunk.toolCallDelta.name
+      if (chunk.toolCallDelta.name) {
+        cur.name = chunk.toolCallDelta.name
+        // 1.19.0：工具名首次可知即回调（args 半截 JSON 不解析——ADR-001）；同名一次
+        if (opts.onDelta) opts.onDelta({ toolName: cur.name })
+      }
       if (chunk.toolCallDelta.argumentsDelta) cur.argsBuf += chunk.toolCallDelta.argumentsDelta
       calls.set(idx, cur)
     }
@@ -115,7 +135,10 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
     // 适配器层已保证首 finishReason（AL-05）；防御性兜底显式化
     throw new Error('CAR-E-LLM-FINISH: 流结束无 finishReason（适配器契约违规）')
   }
-  text += redactor.flush()
+  // 1.19.0：flush 残段先回调后并入 text——textDelta 之和 + 尾巴 ≡ 落链 assistant 全文
+  const tail = redactor.flush()
+  if (tail && opts.onDelta) opts.onDelta({ textDelta: tail })
+  text += tail
 
   // 1.11-S2（D-33 / 计量设计 §3.3）：请求级 usage 事实落链（拿到 usage 的最后一个 chunk 即请求
   // 收尾；撞限/异常 turn 照常落——截断前已完成请求的 usage 事实不吞）。缺失 = provider 未回，
