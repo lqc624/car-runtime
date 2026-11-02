@@ -19,13 +19,20 @@
  *
  * 纪律：mock 禁作证据（设计 §10.5-2）；密钥仅经 CredentialService resolve→reveal，不入任何输出；
  *       只读网关，不写仓库文件。
- * 用法：node --experimental-transform-types tools/cache-probe.mjs
+ * 用法：node --experimental-transform-types tools/cache-probe.mjs [--rolling]
  * env：ANTHROPIC_API_KEY（必需）+ CAR_ALLOW_ENV_CREDENTIALS=1（env 通道显式开启）；
  *      CAR_PROBE_MODEL 覆盖为单槽位；CAR_PROBE_BASE_URL 覆盖网关（默认商汤）。
+ *
+ * 1.20-K1（D-48 P2）--rolling 形态：与 P2 同形确证（1.20 设计 §3.5）——
+ *   call-1 = [system(≥1024tok), user₁(尾部断点)]        → 期望 cache_creation > 0
+ *   call-2 = [system, user₁, assistant₁, user₂(尾部断点)] → 期望 cache_read > 0（覆盖 call-1 全前缀）
+ * 判据仍以 providerRaw.messageDelta 原始层为准（K5 判死教训：归一化层会吞证据）。
+ * VERDICT A = 允许把该 adapterId 登记进白名单；B = 判死；C = 部分兑现待复测。
  */
 import { createAnthropicAdapter } from '../src/runtime-core/llm.ts'
 import { CredentialService } from '../src/runtime-core/credentials.ts'
 
+const ROLLING = process.argv.includes('--rolling')
 const BASE_URL = process.env.CAR_PROBE_BASE_URL ?? 'https://token.sensenova.cn'
 const MODELS = process.env.CAR_PROBE_MODEL
   ? [process.env.CAR_PROBE_MODEL]
@@ -41,21 +48,36 @@ const SYSTEM = Array.from({ length: 24 }, (_, i) =>
 
 const USER = '只回复两个字：收到'
 
+// --rolling：P2 同形两轮（call-2 前缀 = call-1 全量 + 增量，尾部断点随轮滚动）
+const MESSAGES_ROLLING_1 = [
+  { role: 'system', content: SYSTEM },
+  { role: 'user', content: `${USER}（第 1 轮）` },
+]
+const MESSAGES_ROLLING_2 = [
+  { role: 'system', content: SYSTEM },
+  { role: 'user', content: `${USER}（第 1 轮）` },
+  { role: 'assistant', content: '收到' },
+  { role: 'user', content: `${USER}（第 2 轮）` },
+]
+
 const adapter = createAnthropicAdapter({
   baseUrl: BASE_URL,
   // 探针 = env 专用通道（keychain 通道注入恒空——不触碰用户凭据库）
   credentials: new CredentialService({ keychainReader: () => null }),
 })
 
+// 1.20-K1：rolling 形态下把探针身份登记进白名单 env（适配器每请求求值；identity 缺省 = adapter id 'anthropic'）
+if (ROLLING) process.env.CAR_LLM_PROMPT_CACHE_ROLLING = 'anthropic'
+
 /** 单次真实调用：消费整流，回收 usage / finishReason / error（chunk 契约：usage 附着末 chunk） */
-async function call(label, model) {
+async function call(label, model, messages) {
   let usage
   let finishReason
   let error
   try {
     for await (const c of adapter.chat({
       model,
-      messages: [
+      messages: messages ?? [
         { role: 'system', content: SYSTEM },
         { role: 'user', content: USER },
       ],
@@ -85,12 +107,12 @@ const line = (r) => {
   ].join(' | ')
 }
 
-console.log(`systemChars=${SYSTEM.length} baseUrl=${BASE_URL} slots=${MODELS.length}`)
+console.log(`systemChars=${SYSTEM.length} baseUrl=${BASE_URL} slots=${MODELS.length} mode=${ROLLING ? 'rolling(P2)' : 'system(P1)'}`)
 const verdicts = []
 for (const model of MODELS) {
   console.log(`---- slot ${model} ----`)
-  const c1 = await call('call-1', model)
-  const c2 = await call('call-2', model)
+  const c1 = ROLLING ? await call('call-1', model, MESSAGES_ROLLING_1) : await call('call-1', model)
+  const c2 = ROLLING ? await call('call-2', model, MESSAGES_ROLLING_2) : await call('call-2', model)
   console.log(line(c1))
   console.log(line(c2))
 
@@ -114,7 +136,17 @@ for (const v of verdicts) {
 }
 const anyA = verdicts.some((v) => v.verdict === 'A')
 console.log(anyA
-  ? 'A（至少一槽位读侧命中）：网关兑现 cache_control 断点——P2 从判死转重开评估（1.16 设计 §3.3 分期门槛）'
+  ? ROLLING
+    ? 'A（读侧命中）：网关兑现滚动断点——允许把该端点 adapterId 登记进 llm.promptCache.rolling.adapters（1.20 设计 §3.5）'
+    : 'A（至少一槽位读侧命中）：网关兑现 cache_control 断点——P2 从判死转重开评估（1.16 设计 §3.3 分期门槛）'
   : verdicts.every((v) => v.verdict === 'B')
     ? 'B（全部槽位双零）：网关不兑现（或不回执缓存字段）——P2 判死维持'
     : 'C（部分兑现/写侧无回执）——按实测数据裁决（providerRaw 供对拍）')
+if (ROLLING && anyA) {
+  console.log('---- 白名单登记行（VERDICT=A 端点） ----')
+  for (const v of verdicts.filter((v) => v.verdict === 'A')) {
+    console.log(`// ${new Date().toISOString()} probe=${BASE_URL} model=${v.model} deltaRead=${v.dCr2}`)
+    console.log(`llm.promptCache.rolling.adapters = ["${process.env.CAR_PROBE_ADAPTER_ID ?? 'anthropic'}"]  // model=${v.model}`)
+  }
+  console.log('提醒：登记前置 = 该 adapterId（单端点 anthropic / 池成员 id）与探针端点同源；慢速对话端点勿登记（TTL 5min 过期净亏，1.20 设计 §3.3）')
+}

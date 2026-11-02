@@ -123,12 +123,39 @@ export function doctorModelReadiness(opts: { env?: NodeJS.ProcessEnv; cwd?: stri
     } catch { /* 全落空 = not-found（登记口径，非错误） */ }
   }
   const configured = !!baseUrl && !!model
+  // 1.20-K1（D-48 P2）：提示缓存策略可视（断点 = 传输层注解；rolling = 白名单缺省关闭，
+  // 登记前置 = 该端点 rolling 形态探针 VERDICT=A——1.20 设计 §3.5 流程门控）
+  const cacheOff = env.CAR_LLM_PROMPT_CACHE === 'off'
+  const rollingEnv = env.CAR_LLM_PROMPT_CACHE_ROLLING
+  const cfgRolling = cfg.error ? undefined : cfg.config.llm?.promptCache?.rolling
+  const rollingList = rollingEnv !== undefined
+    ? rollingEnv.split(',').map(s => s.trim()).filter(Boolean)
+    : (cfgRolling?.adapters ?? [])
+  const rollingShown = rollingEnv !== undefined
+    ? rollingList
+    : rollingList.length ? rollingList : undefined
+  // 白名单未匹配告警（fail-visible 不阻断——成员可能已删，但登记错误必须可见）
+  const knownIdentities = new Set<string>()
+  if (!cfg.error && cfg.config.modelPool?.endpoints.length) {
+    cfg.config.modelPool.endpoints.forEach((ep, i) => knownIdentities.add(ep.id ?? `ep-${i + 1}`))
+  } else if (adapterId === 'anthropic') {
+    knownIdentities.add('anthropic')
+  }
+  const unmatched = rollingList.filter(id => !knownIdentities.has(id))
+  const cacheParts = [
+    `promptCache=${cacheOff ? 'off' : 'on'}`,
+    rollingShown === undefined ? 'rolling=缺省关闭（白名单须探针 VERDICT=A 后登记——llm.promptCache.rolling.adapters / CAR_LLM_PROMPT_CACHE_ROLLING）'
+      : rollingShown.includes('off') ? 'rolling=off（显式清空）'
+      : `rolling=[${rollingShown.join(',')}]${cfgRolling?.breakpoints !== undefined ? ` breakpoints=${cfgRolling.breakpoints}` : ''}`,
+    unmatched.length ? `⚠️ 白名单含未匹配身份：${unmatched.join(',')}（无在册单端点 anthropic / 池成员 id 对应——登记错误或成员已删）` : '',
+  ].filter(Boolean)
   const parts = [
     configured ? `baseUrl=${baseUrl} model=${model}${adapterId ? ` adapter=${adapterId}` : ''}` : 'baseUrl/model 未配置（car run 真路径需 llm.* 配置或 CAR_LLM_BASE_URL/CAR_LLM_MODEL——见 car doctor / 配置指南）',
     credential === 'keychain' ? `凭据=keychain 命中（car-runtime/${provider}，值不打印）`
       : credential === 'env' ? '凭据=env 命中（显式开启 fallback，值不打印）'
       : '凭据未就绪（keychain 未命中且 env fallback 未开或变量缺席——A080001 会引导至此）',
     `envFallback=${envFallback}`,
+    ...cacheParts,
   ]
   return { configured, baseUrl: baseUrl ?? '', model: model ?? '', credential, envFallback, detail: parts.join('；') }
 }

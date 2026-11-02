@@ -211,6 +211,16 @@ async function main(): Promise<number> {
         // 1.17-K4（D-48 P1 / V1-A）：提示缓存断点关断 flag——flag > env（置 env 后适配器内部决策；
         // 池/单端点两分支通用，须先于适配器创建）
         if (rest.includes('--no-prompt-cache')) process.env.CAR_LLM_PROMPT_CACHE = 'off'
+        // 1.20-K1（D-48 P2）：滚动断点白名单——flag > env > config（env = 适配器每请求求值的
+        // 运行时事实源；'off' = 显式清空；池成员身份在 pool 装配处按 m.id 传入，不走本 env 的单端点语义）
+        const rollingFlag = flagValue(rest, '--prompt-cache-rolling')
+        if (rollingFlag !== undefined) process.env.CAR_LLM_PROMPT_CACHE_ROLLING = rollingFlag
+        else if (!process.env.CAR_LLM_PROMPT_CACHE_ROLLING && llm.promptCache?.rolling?.adapters?.length) {
+          process.env.CAR_LLM_PROMPT_CACHE_ROLLING = llm.promptCache.rolling.adapters.join(',')
+        }
+        if (llm.promptCache?.rolling?.breakpoints !== undefined) {
+          process.env.CAR_LLM_PROMPT_CACHE_ROLLING_BREAKPOINTS = String(llm.promptCache.rolling.breakpoints)
+        }
         const credService = new CredentialService()
         const core = new RuntimeCore(credService)
         core.bindContext(ctx)

@@ -304,6 +304,9 @@ export function assembleModelPool(opts: ModelPoolAssemblyOptions): {
       ? createAnthropicAdapter({
           baseUrl: m.baseUrl,
           credentials: opts.credentials,
+          // 1.20-K1（D-48 P2）：滚动断点按成员路由身份求值——池成员适配器 id 恒 'anthropic'
+          //（装配未透传），禁按其求值（一端点解锁 = 全池解锁，1.20 设计 §3.1）
+          rollingIdentity: m.id,
           ...(m.keyEnv !== undefined ? { credentialEnvVars: [m.keyEnv] } : {}),
           ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
           ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),

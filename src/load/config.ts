@@ -56,6 +56,18 @@ export interface LlmConfig {
   compaction?: CompactionConfig
   /** 1.16-K3（D-K2-2）：子 Agent 配置（缺省 = 继承父会话模型锚点 Q-A2 + 宿主护栏常量 Q-A3） */
   subagent?: SubagentConfig
+  /** 1.20-K1（D-48 P2）：提示缓存滚动断点白名单（缺省关闭；运行时事实源 = CAR_LLM_PROMPT_CACHE_ROLLING，cli 按 flag > env > config 落 env） */
+  promptCache?: PromptCacheConfig
+}
+
+/** 1.20-K1（D-48 P2）：滚动断点白名单（1.20 设计 §3.4/§3.5——逐条确证，无通配） */
+export interface PromptCacheConfig {
+  rolling?: {
+    /** 路由身份白名单（单端点 'anthropic' / 池成员 id）；空表显式拒绝（禁静默 no-op）；登记前置 = 该端点探针 VERDICT=A */
+    adapters?: string[]
+    /** 滚动断点数（1..3 钳制；缺省 1——多挂对同一前缀重复写 1.25x 缓存，1.20 设计 §3.3） */
+    breakpoints?: number
+  }
 }
 
 /** 1.16-K3（D-K2-2）：子 Agent 配置面——宿主编排消费（内核自身不装配编排；schema 只登记键位） */
@@ -264,6 +276,17 @@ const rawSchema = z.object({
     }).strict()
       .refine(v => Object.keys(v).length > 0, { message: '至少登记一个键（model/maxConcurrent/maxCumulative；无子 Agent 配置需求请移除 llm.subagent 键，行为与 1.15.2 一致）' })
       .optional(),
+    // 1.20-K1（D-48 P2）：滚动断点白名单（路由身份精确匹配；adapters 空表显式拒——禁静默 no-op）
+    promptCache: z.object({
+      rolling: z.object({
+        adapters: z.array(nonEmptyTrimmed(), { invalid_type_error: '必须为字符串数组' })
+          .min(1, { message: '至少登记一个路由身份（空表 = 静默 no-op 显式拒绝；不需要滚动断点请移除 llm.promptCache 键）' })
+          .optional(),
+        breakpoints: positiveInt()
+          .refine(v => v <= 3, { message: '必须为 1..3（provider 断点硬限 4，system 占 1）' })
+          .optional(),
+      }).strict().optional(),
+    }).strict().optional(),
   }).strict().optional(),
   // 1.14-S4（K-POOL-1 / D-42）：模型池登记（多端点 fallback + health + routing/decide 落链）
   modelPool: modelPoolSchema.optional(),
@@ -323,6 +346,16 @@ function parseCarConfig(raw: unknown): { config: CarConfig; error?: string } {
       if (d.llm.subagent.maxConcurrent !== undefined) sg.maxConcurrent = d.llm.subagent.maxConcurrent
       if (d.llm.subagent.maxCumulative !== undefined) sg.maxCumulative = d.llm.subagent.maxCumulative
       llm.subagent = sg
+    }
+    if (d.llm.promptCache) {
+      const pc: PromptCacheConfig = {}
+      if (d.llm.promptCache.rolling) {
+        const r: NonNullable<PromptCacheConfig['rolling']> = {}
+        if (d.llm.promptCache.rolling.adapters !== undefined) r.adapters = [...d.llm.promptCache.rolling.adapters]
+        if (d.llm.promptCache.rolling.breakpoints !== undefined) r.breakpoints = d.llm.promptCache.rolling.breakpoints
+        pc.rolling = r
+      }
+      llm.promptCache = pc
     }
     out.llm = llm
   }
@@ -469,6 +502,8 @@ export function mergeLlmConfig(env: NodeJS.ProcessEnv, cfg: CarConfig, flags: { 
     ...(adapterId ? { adapterId } : {}),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     allowEnvFallback,
+    // 1.20-K1（D-48 P2）：滚动断点声明层透传（cli 层按 flag > env > config 落运行时 env）
+    ...(cfg.llm?.promptCache ? { promptCache: cfg.llm.promptCache } : {}),
   }
 }
 

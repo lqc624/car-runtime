@@ -520,6 +520,12 @@ export interface AnthropicAdapterOptions {
   defaultMaxTokens?: number
   /** 1.14-S4（K-POOL-1）：成员级凭据 env 变量名引用（modelPool keyEnv——resolve 精确候选；keychain 链保持在前） */
   credentialEnvVars?: string[]
+  /**
+   * 1.20-K1（D-48 P2）：滚动断点求值身份。缺省 = id（单端点 'anthropic'）；
+   * **池成员必须显式传 m.id**——池成员适配器 id 恒 'anthropic'（装配未透传成员标识），
+   * 按其求值 = 白名单一端点解锁全池（1.20 设计 §3.1 专项锁，S66/AC-9）。
+   */
+  rollingIdentity?: string
 }
 
 /** stop_reason → CAR finishReason（未映射 fail-visible——openai FINISH_MAP 同纪律） */
@@ -579,12 +585,68 @@ function mergeAnthropicUsage(
  * 投影/快照比对，N1 零影响；生效有 provider 侧最小长度门槛（~1024 tokens）——短 system
  * 静默不生效应以 usage.cacheCreationTokens 观测，禁以「配了就该生效」推断。关断 =
  * CAR_LLM_PROMPT_CACHE=off（cli flag --no-prompt-cache 置本 env；A/B 与故障回退通道）。
+ * 1.20-K1（D-48 P2）：滚动断点——白名单命中时在尾部消息挂第二处断点（缺省 1 个，只块化命中
+ * 消息），键 = 路由身份（rollingIdentity，池成员 = m.id）；CAR_LLM_PROMPT_CACHE_ROLLING
+ * 逗号清单（'off' = 显式清空，无通配）+ CAR_LLM_PROMPT_CACHE_ROLLING_BREAKPOINTS（1..3 钳制）。
  */
 function promptCacheOff(): boolean {
   return process.env.CAR_LLM_PROMPT_CACHE === 'off'
 }
 
-function toAnthropic(req: LlmRequest, apiKey: string) {
+/**
+ * 1.20-K1（D-48 P2）：滚动断点白名单求值（每请求求值，与 promptCacheOff 同址同时序）。
+ * 键 = 路由身份：单端点 = adapter id（'anthropic'）/ 池成员 = 显式 rollingIdentity（m.id）——
+ * **禁按 adapter.id 给池成员求值**（池成员适配器 id 恒 'anthropic'——pool 装配未透传成员标识，
+ * 一端点解锁 = 全池解锁，1.20 设计 §3.1）。off 连坐最高优先；清单值 'off' = 显式清空；
+ * 无 '*' 通配（通配废掉逐条确证）；大小写敏感（归一化会掩盖登记错误）。
+ */
+export function rollingCacheAllowed(identity: string): boolean {
+  if (promptCacheOff()) return false
+  const raw = process.env.CAR_LLM_PROMPT_CACHE_ROLLING
+  if (!raw) return false
+  const list = raw.split(',').map(s => s.trim()).filter(Boolean)
+  if (!list.length || list.includes('off')) return false
+  return list.includes(identity)
+}
+
+// 1.20-K1：滚动断点数——provider 硬限 4，system 断点（P1）恒占 1；缺省 1（多挂 = 对同一前缀
+// 重复写 1.25x 缓存，1.20 设计 §3.3）。env 非法/缺席回落缺省，超限钳制（AC-8）
+const ROLLING_BREAKPOINTS_DEFAULT = 1
+const ROLLING_BREAKPOINTS_MAX = 3
+
+function rollingBreakpoints(): number {
+  const raw = Number(process.env.CAR_LLM_PROMPT_CACHE_ROLLING_BREAKPOINTS)
+  if (!Number.isFinite(raw) || raw < 1) return ROLLING_BREAKPOINTS_DEFAULT
+  return Math.min(Math.trunc(raw), ROLLING_BREAKPOINTS_MAX)
+}
+
+/**
+ * 1.20-K1（D-48 P2）：滚动断点放置——从尾部往前命中即挂，只块化被挂消息，其余消息维持
+ * 字符串（1.20 设计 §3.2：全量块化零收益高风险）。断点挂**末块**（tool_result / tool_use
+ * 多块形态不拆不重组，语义不变）；空串 / 空数组 / 非对象末块无可挂载体 → 跳过前移（不换位不补造）。
+ * 纯传输层注解：只改本请求出站体，不进 SessionLog / 投影（N1 零影响，S59 同红线）。
+ */
+function attachRollingBreakpoints(turns: Array<{ role: 'user' | 'assistant'; content: unknown }>, count: number): void {
+  let attached = 0
+  for (let i = turns.length - 1; i >= 0 && attached < count; i--) {
+    const t = turns[i]!
+    if (typeof t.content === 'string') {
+      if (!t.content.length) continue
+      t.content = [{ type: 'text', text: t.content, cache_control: { type: 'ephemeral' } }]
+      attached++
+      continue
+    }
+    if (Array.isArray(t.content) && t.content.length) {
+      const last = t.content[t.content.length - 1] as Record<string, unknown> | undefined
+      if (last && typeof last === 'object' && !Array.isArray(last)) {
+        last.cache_control = { type: 'ephemeral' }
+        attached++
+      }
+    }
+  }
+}
+
+function toAnthropic(req: LlmRequest, apiKey: string, cache: { rolling: boolean; rollingBreakpoints: number }) {
   const system: string[] = []
   const turns: Array<{ role: 'user' | 'assistant'; content: unknown }> = []
   let pendingToolResults: Array<Record<string, unknown>> = []
@@ -617,6 +679,9 @@ function toAnthropic(req: LlmRequest, apiKey: string) {
     }
   }
   flushToolResults()
+  // 1.20-K1（D-48 P2）：滚动断点在白名单命中时挂尾部消息（缺省 1 个）——system 断点（P1）
+  // 与消息断点独立，off 时两者俱灭（rollingCacheAllowed 内已连坐）
+  if (cache.rolling) attachRollingBreakpoints(turns, cache.rollingBreakpoints)
   // 1.14-S1（K-MP-1 / D-39）：思考参数——effort → thinking.budget_tokens（ANTHROPIC_THINKING_BUDGET 表）；
   // off/缺席不下发；budget ≥ max_tokens 违反 Messages API 约束（max_tokens 必须大于 budget_tokens）→
   // 显式报错提示调高（fail-visible，禁静默改写 max_tokens）
@@ -718,6 +783,8 @@ async function* parseAnthropicSseStream(body: AsyncIterable<Uint8Array>, model: 
 
 export function createAnthropicAdapter(opts: AnthropicAdapterOptions): LlmAdapter & { id: string } {
   const id = opts.id ?? 'anthropic'
+  // 1.20-K1（D-48 P2）：滚动断点求值身份（每请求经 rollingCacheAllowed 对 env 求值，非构造期定值）
+  const rollingIdentity = opts.rollingIdentity ?? id
   const baseUrl = opts.baseUrl.replace(/\/+$/, '')
   assertTlsOrLoopback(baseUrl)
   const url = `${baseUrl}/v1/messages`
@@ -746,7 +813,10 @@ export function createAnthropicAdapter(opts: AnthropicAdapterOptions): LlmAdapte
             const ref = opts.credentials.resolve(opts.provider ?? id, credResolveOpts)
             apiKey = opts.credentials.reveal(ref, {})
           }
-          return toAnthropic(req, apiKey)
+          return toAnthropic(req, apiKey, {
+            rolling: rollingCacheAllowed(rollingIdentity),
+            rollingBreakpoints: rollingBreakpoints(),
+          })
         },
         fetchImpl,
         signal: req.signal,
