@@ -53,8 +53,13 @@ export interface ChatStepOptions {
    *    同纪律）；同请求同名只回调一次；
    *  - 纯渲染提示：不落链、不持久、不影响 ModelStep 与 N1（事实本体仍以落盘行为准，
    *    assistant 事件到达前 UI 呈现的增量属临时态）；缺省（undefined）= 零行为变化。
+   *  1.22（D-C1/D-C2）：+thinkingDelta = 思考流式上屏数据源（桌面批消费）——掩蔽流
+   *    （独立 StreamRedactor 实例，与 assistant 文本同脱敏纪律；链侧 thinking 禁改写不变，
+   *    审计面原文唯一事实源 = 链）；渲染提示级（同 toolName，无对拍红线——1.19 红线面
+   *    不被 thinking 破坏，D-T6 延续）；内核 spec 内断言：thinkingDelta 之和 + flush
+   *    ≡ 掩蔽(thinking 事件 payload 之和)。
    */
-  onDelta?: (d: { textDelta?: string; toolName?: string }) => void
+  onDelta?: (d: { textDelta?: string; toolName?: string; thinkingDelta?: string }) => void
 }
 
 /** ModelStep 加法扩展：脱敏计数留痕（S15 secretsRedacted 同名口径） */
@@ -96,11 +101,22 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
   const redactor = new StreamRedactor()
   let text = ''
   const calls = new Map<number, { id?: string; name?: string; argsBuf: string }>()
-  // 1.21（R-TOKENHUB-1 / D-T1/D-T2）：thinking 捕获累积——禁改写（回传签名完整性 > 脱敏
-  // 改写），provider 事实字节保真；redacted_thinking = data 全文单发覆盖
-  let thinkingText = ''
-  let thinkingSignature = ''
-  let thinkingRedacted: string | undefined
+  // 1.21（R-TOKENHUB-1 / D-T1/D-T2）→ 1.22（D-B1 多块硬化）：thinking 捕获累积——禁改写
+  // （回传签名完整性 > 脱敏改写），provider 事实字节保真。单累加器升级为块数组：
+  // thinkingBlockStart 且累积非空 = 封板前块（签名随块独立，不再跨块拼接）；redacted =
+  // 封板 + 独立块（原「后块覆盖前块」缺陷消除）。单块流形态与 1.21.1 逐字节等价。
+  type ThinkingBlock = { text: string; signature?: string; redacted?: boolean }
+  const thinkingBlocks: ThinkingBlock[] = []
+  let thCurText = ''
+  let thCurSig = ''
+  const sealThinkingBlock = () => {
+    if (thCurText.length) thinkingBlocks.push({ text: thCurText, ...(thCurSig ? { signature: thCurSig } : {}) })
+    thCurText = ''
+    thCurSig = ''
+  }
+  // 1.22（D-C1）：思考掩蔽流——独立 StreamRedactor 实例（与 assistant 文本同脱敏纪律；
+  // 链侧禁改写不变，UI 显示面与审计原文面分离）
+  const thinkingRedactor = new StreamRedactor()
   let stopReason: ModelStep['stopReason'] | undefined
   let errorDetail: string | undefined
   let usage: LlmUsage | undefined
@@ -136,10 +152,25 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
       if (chunk.toolCallDelta.argumentsDelta) cur.argsBuf += chunk.toolCallDelta.argumentsDelta
       calls.set(idx, cur)
     }
-    // 1.21（R-TOKENHUB-1 / D-T1）：thinking 三面捕获（text/signature 增量累积、redacted 单发覆盖）
-    if (chunk.thinkingDelta !== undefined) thinkingText += chunk.thinkingDelta
-    if (chunk.thinkingSignatureDelta !== undefined) thinkingSignature += chunk.thinkingSignatureDelta
-    if (chunk.thinkingRedacted !== undefined) thinkingRedacted = chunk.thinkingRedacted
+    // 1.21（D-T1）→ 1.22（D-B1 多块）：thinking 三面捕获——块数组累积（签名随块独立）+
+    // 掩蔽流回调（D-C1：独立 redactor，masked 非空才回调）
+    if (chunk.thinkingBlockStart !== undefined) sealThinkingBlock()
+    if (chunk.thinkingDelta !== undefined) {
+      thCurText += chunk.thinkingDelta
+      if (opts.onDelta) {
+        const masked = thinkingRedactor.push(chunk.thinkingDelta)
+        if (masked) opts.onDelta({ thinkingDelta: masked })
+      }
+    }
+    if (chunk.thinkingSignatureDelta !== undefined) thCurSig += chunk.thinkingSignatureDelta
+    if (chunk.thinkingRedacted !== undefined) {
+      sealThinkingBlock() // redacted = 独立块（不与前文本块拼接）
+      thinkingBlocks.push({ text: chunk.thinkingRedacted, redacted: true })
+      if (opts.onDelta) {
+        const masked = thinkingRedactor.push(chunk.thinkingRedacted)
+        if (masked) opts.onDelta({ thinkingDelta: masked })
+      }
+    }
     if (chunk.error) errorDetail = chunk.error.message
     if (chunk.usage) usage = chunk.usage // D-33：附着于最后一个 chunk——后到覆盖
     if (chunk.finishReason !== undefined) stopReason = chunk.finishReason === 'aborted' ? 'error' : chunk.finishReason
@@ -155,6 +186,12 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
   const tail = redactor.flush()
   if (tail && opts.onDelta) opts.onDelta({ textDelta: tail })
   text += tail
+  // 1.22（D-B1/D-C1）：流尾封板末块 + 思考掩蔽流 flush 残段（渲染提示面，先于 finish 兜底——flush 不抛错）
+  sealThinkingBlock()
+  {
+    const thTail = thinkingRedactor.flush()
+    if (thTail && opts.onDelta) opts.onDelta({ thinkingDelta: thTail })
+  }
 
   // 1.11-S2（D-33 / 计量设计 §3.3）：请求级 usage 事实落链（拿到 usage 的最后一个 chunk 即请求
   // 收尾；撞限/异常 turn 照常落——截断前已完成请求的 usage 事实不吞）。缺失 = provider 未回，
@@ -173,18 +210,30 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
     })
   }
 
-  // 5a. 1.21（R-TOKENHUB-1 / D-T2）：thinking 事件落链（actor='model'，先于 assistant/toolCall
-  //     ——投影层按同 turn 首 toolCall 附加回传）。payload = thinking 原文禁改写（签名完整性 >
-  //     脱敏改写——改写即回传校验失败）；secretsRedacted 仅计数留痕（审计信号，不复写）；
-  //     redacted 形态 payload = data 全文（meta.redacted=true）。无 thinking chunk = 零新事件
-  //     （D-T5 字节兼容，链形态与 1.20 全等）。
-  if (thinkingText.length || thinkingRedacted !== undefined) {
-    const thinkingPayload = thinkingRedacted ?? thinkingText
-    const secretsInThinking = scanSecrets(thinkingPayload).hits.length
-    log.append('model', 'thinking', turnId, thinkingPayload, {
-      ...(thinkingRedacted !== undefined ? { redacted: true } : {}),
-      ...(thinkingSignature ? { signature: thinkingSignature } : {}),
+  // 5a. 1.21（R-TOKENHUB-1 / D-T2）→ 1.22（D-B1）：thinking 事件落链——一块一事件（append-only
+  //     最窄面，审计/投影按序聚合自然成立）。actor='model'，先于 assistant/toolCall（投影层按同
+  //     turn 首 toolCall 附加回传）。payload = 块原文禁改写（签名完整性 > 脱敏改写——改写即回传
+  //     校验失败）；secretsRedacted 仅计数留痕（审计信号，不复写）；redacted 形态 payload = data
+  //     全文（meta.redacted=true）。**单块链（含 redacted 单块）meta 无 blockIndex = 与 1.21.1
+  //     逐字节同形（D-B1 兼容线）；多块链每块带 blockIndex（0 起块序）**。无 thinking 块 = 零新
+  //     事件（D-T5 字节兼容，链形态与 1.20 全等）。
+  if (thinkingBlocks.length === 1) {
+    const b = thinkingBlocks[0]!
+    const secretsInThinking = scanSecrets(b.text).hits.length
+    log.append('model', 'thinking', turnId, b.text, {
+      ...(b.redacted ? { redacted: true } : {}),
+      ...(b.signature ? { signature: b.signature } : {}),
       ...(secretsInThinking ? { secretsRedacted: secretsInThinking } : {}),
+    })
+  } else if (thinkingBlocks.length > 1) {
+    thinkingBlocks.forEach((b, i) => {
+      const secretsInThinking = scanSecrets(b.text).hits.length
+      log.append('model', 'thinking', turnId, b.text, {
+        ...(b.redacted ? { redacted: true } : {}),
+        ...(b.signature ? { signature: b.signature } : {}),
+        ...(secretsInThinking ? { secretsRedacted: secretsInThinking } : {}),
+        blockIndex: i,
+      })
     })
   }
 

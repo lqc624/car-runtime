@@ -84,6 +84,9 @@ export interface LlmChunk {
   thinkingSignatureDelta?: string
   /** redacted_thinking 块 data 全文（content_block_start 单发；回传形态 {type:'redacted_thinking',data}） */
   thinkingRedacted?: string
+  /** 1.22（D-B1 多块）：thinking 块开始信号（content_block_start type='thinking'，值为块 evt.index）——
+   * 消费方（chatStep）以「累积非空时封板」判块边界；单块流亦发此信号，落链形态不受影响（单块 meta 无 blockIndex） */
+  thinkingBlockStart?: number
 }
 
 /** Provider 适配器（ACL，C-02）：统一签名，消解 Provider 差异 */

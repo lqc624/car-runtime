@@ -387,8 +387,14 @@ async function* parseSseStream(body: AsyncIterable<Uint8Array>, model: string, a
           }))
         : []
       const text = typeof delta.content === 'string' && delta.content.length ? delta.content : undefined
+      // 1.22（D-A2）：openai 形 thinking 捕获——delta.reasoning_content（DeepSeek 官方 + new-api
+      // 家族标准形态）→ thinkingDelta chunk（复用 1.21 anthropic 捕获字段，chatStep 零改动）。
+      // 回传面不做（D-A1）：已知 openai 形上游零需求且 DeepSeek 官方拒绝收回传（输入含
+      // reasoning_content → 400）；enforce 契约网关真出现时按 1.21 模式另立项。
+      const reasoningContent =
+        typeof delta.reasoning_content === 'string' && delta.reasoning_content.length ? delta.reasoning_content : undefined
       // LlmChunk 单 toolCallDelta 口径：同事件多条 tool_calls 顺序展开为多 chunk
-      if (!text && !toolCallDeltas.length && finish === undefined) {
+      if (!text && reasoningContent === undefined && !toolCallDeltas.length && finish === undefined) {
         // 空事件但携 usage（部分 compat 网关形态）：usage 不随空事件丢失
         if (usage) yield { usage }
         continue
@@ -396,6 +402,7 @@ async function* parseSseStream(body: AsyncIterable<Uint8Array>, model: string, a
       const chunks: LlmChunk[] = []
       if (toolCallDeltas.length === 0) {
         chunks.push({
+          ...(reasoningContent !== undefined ? { thinkingDelta: reasoningContent } : {}),
           ...(text !== undefined ? { delta: text } : {}),
           ...(finish !== undefined
             ? { finishReason: finish, ...(finish === 'error' ? { error: { code: 'B080001', message: `未映射的 finish_reason "${raw}"` } } : {}) }
@@ -405,6 +412,7 @@ async function* parseSseStream(body: AsyncIterable<Uint8Array>, model: string, a
         for (let i = 0; i < toolCallDeltas.length; i++) {
           const last = i === toolCallDeltas.length - 1
           chunks.push({
+            ...(i === 0 && reasoningContent !== undefined ? { thinkingDelta: reasoningContent } : {}),
             ...(i === 0 && text !== undefined ? { delta: text } : {}),
             toolCallDelta: toolCallDeltas[i],
             ...(last && finish !== undefined
@@ -662,16 +670,17 @@ function toAnthropic(req: LlmRequest, apiKey: string, cache: { rolling: boolean;
   //  - 相邻 assistant(toolCall) 聚合（同 turn 多 tool_use 单条）；thinking 取首条附加；
   //  - 紧邻前驱为 assistant 纯文本消息 → 弹回合并为 [thinking?, text, tool_use…]；
   //  - 无相邻文本的 toolCall 消息形态不变（[thinking?, tool_use]）——非工具环链逐字节兼容（D-T5）。
-  let pendingTu: { toolCalls: Array<{ type: 'tool_use'; id: string; name: string; input: unknown }>; thinkingBlock?: Record<string, unknown> } | null = null
+  let pendingTu: { toolCalls: Array<{ type: 'tool_use'; id: string; name: string; input: unknown }>; thinkingBlocks?: Array<Record<string, unknown>> } | null = null
   const flushTu = () => {
     if (!pendingTu) return
     const prev = turns[turns.length - 1]
-    const { thinkingBlock, toolCalls } = pendingTu
+    const { thinkingBlocks, toolCalls } = pendingTu
+    const th = thinkingBlocks ?? []
     if (prev && prev.role === 'assistant' && typeof prev.content === 'string') {
       turns.pop()
-      turns.push({ role: 'assistant', content: [...(thinkingBlock ? [thinkingBlock] : []), { type: 'text', text: prev.content }, ...toolCalls] })
+      turns.push({ role: 'assistant', content: [...th, { type: 'text', text: prev.content }, ...toolCalls] })
     } else {
-      turns.push({ role: 'assistant', content: [...(thinkingBlock ? [thinkingBlock] : []), ...toolCalls] })
+      turns.push({ role: 'assistant', content: [...th, ...toolCalls] })
     }
     pendingTu = null
   }
@@ -695,14 +704,29 @@ function toAnthropic(req: LlmRequest, apiKey: string, cache: { rolling: boolean;
       const tc = (m.content as { toolCall: { id: string; tool: string; args: unknown } }).toolCall
       // 1.21（R-TOKENHUB-1 / D-T4）：工具环回传——投影层附加的 thinking（同 turn 原始 assistant
       // 消息的 thinking 块）前置重放。1.21.1：thinking 块随合并缓冲进同轮单条消息（见 flushTu 注记）；
-      // 无 thinking = 1.20 形态。
-      const th = (m.content as { thinking?: { text?: string; signature?: string; redacted?: boolean } }).thinking
-      const thinkingBlock = th?.text?.length
-        ? th.redacted
-          ? { type: 'redacted_thinking', data: th.text }
-          : { type: 'thinking', thinking: th.text, ...(th.signature ? { signature: th.signature } : {}) }
-        : undefined
-      if (!pendingTu) pendingTu = { toolCalls: [], ...(thinkingBlock ? { thinkingBlock } : {}) }
+      // 无 thinking = 1.20 形态。1.22（D-B2/D-B3）：投影双形态消费——单块三元组（1.21 形态，字节
+      // 兼容线）/ 多块 blocks 数组（每块独立签名按序展开前置；redacted 混合块序保真）。
+      const th = (m.content as {
+        thinking?: { text?: string; signature?: string; redacted?: boolean; blocks?: Array<{ text: string; signature?: string; redacted?: boolean }> }
+      }).thinking
+      const thinkingBlocks: Array<Record<string, unknown>> = []
+      if (th?.blocks?.length) {
+        for (const b of th.blocks) {
+          if (!b.text?.length) continue
+          thinkingBlocks.push(
+            b.redacted
+              ? { type: 'redacted_thinking', data: b.text }
+              : { type: 'thinking', thinking: b.text, ...(b.signature ? { signature: b.signature } : {}) },
+          )
+        }
+      } else if (th?.text?.length) {
+        thinkingBlocks.push(
+          th.redacted
+            ? { type: 'redacted_thinking', data: th.text }
+            : { type: 'thinking', thinking: th.text, ...(th.signature ? { signature: th.signature } : {}) },
+        )
+      }
+      if (!pendingTu) pendingTu = { toolCalls: [], ...(thinkingBlocks.length ? { thinkingBlocks } : {}) }
       pendingTu.toolCalls.push({ type: 'tool_use', id: tc.id, name: tc.tool, input: tc.args ?? {} })
       continue
     }
@@ -779,8 +803,13 @@ async function* parseAnthropicSseStream(body: AsyncIterable<Uint8Array>, model: 
         const block = evt.content_block
         if (block?.type === 'tool_use') {
           yield { toolCallDelta: { index: evt.index, id: block.id, name: block.name } }
+        } else if (block?.type === 'thinking') {
+          // 1.22（D-B1 多块）：thinking 块开始信号——消费方（chatStep）以累积非空判封板，
+          // 单块流亦发此信号但落链形态不变（单块 meta 无 blockIndex）
+          yield { thinkingBlockStart: evt.index }
         } else if (block?.type === 'redacted_thinking' && typeof block.data === 'string' && block.data.length) {
-          // 1.21（R-TOKENHUB-1 / D-T1）：redacted_thinking 全文单发（回传形态 {type:'redacted_thinking',data}）
+          // 1.21（R-TOKENHUB-1 / D-T1）：redacted_thinking 全文单发（回传形态 {type:'redacted_thinking',data}）；
+          // 1.22：消费方将 redacted 封为独立块（原「后块覆盖前块」缺陷随多块硬化消除）
           yield { thinkingRedacted: block.data }
         }
       } else if (type === 'content_block_delta') {
