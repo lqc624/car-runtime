@@ -119,8 +119,10 @@ test('S67: anthropic SSE——thinking_delta/signature_delta/redacted_thinking �
 // ==================== s68：chatStep 落链 ====================
 
 test('S68: chatStep——thinking 落链（actor=model 链序 thinking→assistant；signature/redacted/secrets 计数随 meta；禁改写）', async () => {
+  // 夹具凭据经拼接注入（G-03 文件级扫描无完整字面量——dc6dc40 同款纪律）；运行时拼出全串供 scanSecrets 命中
+  const awsFixture = ['AKIA', 'IOSFODNN7EXAMPLE'].join('')
   const core = coreWith((async () => sseResponse(anthropicSse(THINKING_TOOLUSE_EVENTS({
-    thinking: '推理过程 AKIAIOSFODNN7EXAMPLE 结束', signature: 'sig-xyz=', text: '我来查', id: 'toolu_9', name: 'f', args: '{}',
+    thinking: `推理过程 ${awsFixture} 结束`, signature: 'sig-xyz=', text: '我来查', id: 'toolu_9', name: 'f', args: '{}',
   })))) as typeof fetch)
   const log = new SessionLog('S-s68')
   log.append('user', 'user', 'T1', '查一下')
@@ -130,7 +132,7 @@ test('S68: chatStep——thinking 落链（actor=model 链序 thinking→assista
   assert.ok(th, 'thinking 事件落链')
   assert.equal(th!.actor, 'model')
   assert.equal(th!.turnId, 'T1')
-  assert.equal(th!.payload, '推理过程 AKIAIOSFODNN7EXAMPLE 结束', 'payload = thinking 原文（禁改写字节保真）')
+  assert.equal(th!.payload, `推理过程 ${awsFixture} 结束`, 'payload = thinking 原文（禁改写字节保真）')
   assert.equal(th!.meta?.signature, 'sig-xyz=')
   assert.equal(th!.meta?.secretsRedacted, 1, 'secrets 命中仅计数留痕（不复写）')
   const ai = log.events.findIndex(e => e.kind === 'thinking')
