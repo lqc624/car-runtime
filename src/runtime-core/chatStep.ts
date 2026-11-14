@@ -81,7 +81,14 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
   const messages = log.deriveMessages(undefined, { activeTurnId: turnId }).map(m => ({
     role: m.role as 'system' | 'user' | 'assistant' | 'toolResult',
     content: (m as unknown as { toolCall?: unknown }).toolCall !== undefined
-      ? { toolCall: (m as unknown as { toolCall: unknown }).toolCall }
+      ? {
+          toolCall: (m as unknown as { toolCall: unknown }).toolCall,
+          // 1.21（R-TOKENHUB-1 / D-T3/D-T4）：投影层附加的同 turn thinking 三元组随 toolCall
+          // 载荷透传（适配器回传消费——toAnthropic 前置 thinking 块；openai 形忽略该键）
+          ...((m as unknown as { thinking?: unknown }).thinking !== undefined
+            ? { thinking: (m as unknown as { thinking: unknown }).thinking }
+            : {}),
+        }
       : m.content,
   }))
 
@@ -89,6 +96,11 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
   const redactor = new StreamRedactor()
   let text = ''
   const calls = new Map<number, { id?: string; name?: string; argsBuf: string }>()
+  // 1.21（R-TOKENHUB-1 / D-T1/D-T2）：thinking 捕获累积——禁改写（回传签名完整性 > 脱敏
+  // 改写），provider 事实字节保真；redacted_thinking = data 全文单发覆盖
+  let thinkingText = ''
+  let thinkingSignature = ''
+  let thinkingRedacted: string | undefined
   let stopReason: ModelStep['stopReason'] | undefined
   let errorDetail: string | undefined
   let usage: LlmUsage | undefined
@@ -124,6 +136,10 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
       if (chunk.toolCallDelta.argumentsDelta) cur.argsBuf += chunk.toolCallDelta.argumentsDelta
       calls.set(idx, cur)
     }
+    // 1.21（R-TOKENHUB-1 / D-T1）：thinking 三面捕获（text/signature 增量累积、redacted 单发覆盖）
+    if (chunk.thinkingDelta !== undefined) thinkingText += chunk.thinkingDelta
+    if (chunk.thinkingSignatureDelta !== undefined) thinkingSignature += chunk.thinkingSignatureDelta
+    if (chunk.thinkingRedacted !== undefined) thinkingRedacted = chunk.thinkingRedacted
     if (chunk.error) errorDetail = chunk.error.message
     if (chunk.usage) usage = chunk.usage // D-33：附着于最后一个 chunk——后到覆盖
     if (chunk.finishReason !== undefined) stopReason = chunk.finishReason === 'aborted' ? 'error' : chunk.finishReason
@@ -154,6 +170,21 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
       // 1.14-S3（K-MP-2b / D-41）：分段事实随事件落链——无分段 = 不带键（禁估算）
       ...(usage.segments ? { segments: usage.segments } : {}),
       providerRaw: usage.providerRaw,
+    })
+  }
+
+  // 5a. 1.21（R-TOKENHUB-1 / D-T2）：thinking 事件落链（actor='model'，先于 assistant/toolCall
+  //     ——投影层按同 turn 首 toolCall 附加回传）。payload = thinking 原文禁改写（签名完整性 >
+  //     脱敏改写——改写即回传校验失败）；secretsRedacted 仅计数留痕（审计信号，不复写）；
+  //     redacted 形态 payload = data 全文（meta.redacted=true）。无 thinking chunk = 零新事件
+  //     （D-T5 字节兼容，链形态与 1.20 全等）。
+  if (thinkingText.length || thinkingRedacted !== undefined) {
+    const thinkingPayload = thinkingRedacted ?? thinkingText
+    const secretsInThinking = scanSecrets(thinkingPayload).hits.length
+    log.append('model', 'thinking', turnId, thinkingPayload, {
+      ...(thinkingRedacted !== undefined ? { redacted: true } : {}),
+      ...(thinkingSignature ? { signature: thinkingSignature } : {}),
+      ...(secretsInThinking ? { secretsRedacted: secretsInThinking } : {}),
     })
   }
 

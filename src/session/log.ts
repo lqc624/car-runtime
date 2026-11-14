@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { decodeLogBuffer, splitJsonlLines } from './format.ts'
 
-export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' | 'fork' | 'system' | 'usage' | 'compact' | 'routing' | 'memory' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；M5-DEC4 加法扩展：跨宿主 fork 标记事件；1.4-S2 加法扩展：system prompt 落链（§3.5.5：新模型可见输入 = 新事件类型）；1.11-S2 加法扩展：usage 计量事实（D-33，actor='runtime'、model_visible=0 不进模型消息流，deriveMessages 不投影）；六值 TurnEndReason 不变；1.14-S2 加法扩展（K-MP-2 / D-40）：历史压缩事件（actor='runtime'，append-only 只追加——payload={summary, compactedUpTo, ...}，投影按 compactedUpTo 前缀折叠为摘要，原事件链不改写）；1.14-S4 加法扩展（K-POOL-1 / D-42）：模型池路由决策（actor='runtime'，payload.type='decide'，selected/reason/retries/attempts——禁静默换模型；model_visible=0 不进模型消息流，deriveMessages 不投影——同 usage 纪律）；1.15-S1 加法扩展（K-MEM-1 / D-46）：白盒记忆操作事件（actor='user' 宿主代理用户操作，turnId='memory' 会话级标识同 'compaction' 先例，payload.type='write'|'edit'|'delete'|'rollback'——审计链同源差异化面，链即版本库〔rollback 恢复数据源=链上 payload.before/after 全文〕；model_visible=0 不进模型消息流——记忆注入走宿主装配层 system ctx 行，deriveMessages 不投影）；
+export type EventKind = 'user' | 'assistant' | 'toolCall' | 'toolResult' | 'turnEnd' | 'goalUpdate' | 'hostRaw' | 'fork' | 'system' | 'usage' | 'compact' | 'routing' | 'memory' | 'thinking' // M3-S11 加法扩展：多宿主归一化降级通道（pattern 未命中留痕，零静默）；M5-DEC4 加法扩展：跨宿主 fork 标记事件；1.4-S2 加法扩展：system prompt 落链（§3.5.5：新模型可见输入 = 新事件类型）；1.11-S2 加法扩展：usage 计量事实（D-33，actor='runtime'、model_visible=0 不进模型消息流，deriveMessages 不投影）；六值 TurnEndReason 不变；1.14-S2 加法扩展（K-MP-2 / D-40）：历史压缩事件（actor='runtime'，append-only 只追加——payload={summary, compactedUpTo, ...}，投影按 compactedUpTo 前缀折叠为摘要，原事件链不改写）；1.14-S4 加法扩展（K-POOL-1 / D-42）：模型池路由决策（actor='runtime'，payload.type='decide'，selected/reason/retries/attempts——禁静默换模型；model_visible=0 不进模型消息流，deriveMessages 不投影——同 usage 纪律）；1.15-S1 加法扩展（K-MEM-1 / D-46）：白盒记忆操作事件（actor='user' 宿主代理用户操作，turnId='memory' 会话级标识同 'compaction' 先例，payload.type='write'|'edit'|'delete'|'rollback'——审计链同源差异化面，链即版本库〔rollback 恢复数据源=链上 payload.before/after 全文〕；model_visible=0 不进模型消息流——记忆注入走宿主装配层 system ctx 行，deriveMessages 不投影）；1.21 加法扩展（R-TOKENHUB-1 / D-T2）：thinking 事件（actor='model'，payload=thinking 原文禁改写，meta={signature?, redacted?, secretsRedacted?}——先于 assistant/toolCall 落链；投影 = 同 turn 首个 toolCall 消息附加回传（工具环 reasoning_content 契约，Anthropic thinking+tool_use 规范同款）；standalone/隔断/跨 turn 不投影；无 thinking 事件链投影逐字节不变）；
 export type Actor = 'user' | 'model' | 'plugin' | 'runtime'
 export interface SessionEvent {
   seq: number
@@ -146,11 +146,41 @@ export class SessionLog {
     }
     const out: Array<{ role: string; [k: string]: unknown }> = []
     if (compactEvent) out.push({ role: 'system', content: ((compactEvent.payload as { summary: string }).summary) })
+    // 1.21（R-TOKENHUB-1 / D-T3）：thinking 投影——同 turn 内 thinking 事件附加到首个后续
+    // toolCall 消息（原始 provider assistant 消息 = [thinking, ...tool_use] 的重放形态）；
+    // standalone（无后续 toolCall）/ 被 user·system 隔断 / 跨 turn 不投影（实证：普通两轮
+    // 历史不要求回传）；assistant(text) 同 turn 不隔断（链序 thinking→assistant→toolCall）；
+    // 无 thinking 事件投影逐字节不变（D-T5 兼容线，N1 快照自洽）。
+    let pendingThinking: { turnId: string; text: string; signature?: string; redacted?: boolean } | null = null
     for (const e of projected) {
+      if (pendingThinking && (e.turnId !== pendingThinking.turnId || e.kind === 'user' || e.kind === 'system')) pendingThinking = null
+      if (e.kind === 'thinking') {
+        const p = typeof e.payload === 'string' ? e.payload : ''
+        if (p.length || e.meta?.redacted === true) {
+          pendingThinking = {
+            turnId: e.turnId,
+            text: p,
+            ...(typeof e.meta?.signature === 'string' && e.meta.signature ? { signature: e.meta.signature } : {}),
+            ...(e.meta?.redacted === true ? { redacted: true } : {}),
+          }
+        }
+        continue // thinking 不单独成消息（无独立回传语义）
+      }
       if (e.kind === 'system') out.push({ role: 'system', content: e.payload })
       else if (e.kind === 'user') out.push({ role: 'user', content: e.payload })
       else if (e.kind === 'assistant') out.push({ role: 'assistant', content: e.payload })
-      else if (e.kind === 'toolCall') out.push({ role: 'assistant', toolCall: e.payload })
+      else if (e.kind === 'toolCall') {
+        const msg: { role: string; [k: string]: unknown } = { role: 'assistant', toolCall: e.payload }
+        if (pendingThinking) {
+          msg.thinking = {
+            text: pendingThinking.text,
+            ...(pendingThinking.signature ? { signature: pendingThinking.signature } : {}),
+            ...(pendingThinking.redacted ? { redacted: true } : {}),
+          }
+          pendingThinking = null // 首 toolCall 消费即清——同 turn 多 toolCall = 同一原始消息，单块重放
+        }
+        out.push(msg)
+      }
       else if (e.kind === 'toolResult') {
         const id = (e.payload as { id?: unknown } | null)?.id
         if (typeof id === 'string' && lastSeqById.get(id) !== e.seq) continue // D-23：后续有同 id 最终结果，本条为授权中间记录

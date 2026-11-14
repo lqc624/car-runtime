@@ -76,6 +76,14 @@ export interface LlmChunk {
   error?: { code: string; message: string }
   /** 1.11-S1（D-33）：每次请求最后一个 chunk 附带归一化用量；缺失 = provider 未回，禁补造 */
   usage?: LlmUsage
+  // —— 1.21（R-TOKENHUB-1 / D-T1）thinking 捕获加法——anthropic SSE thinking 面捕获；
+  // 禁改写（回传签名完整性 > 脱敏改写）；缺失 = provider 未发 thinking，禁补造
+  /** thinking 块文本增量（content_block_delta.thinking_delta） */
+  thinkingDelta?: string
+  /** thinking 块签名增量（signature_delta——真 Anthropic thinking 块回传须携签名） */
+  thinkingSignatureDelta?: string
+  /** redacted_thinking 块 data 全文（content_block_start 单发；回传形态 {type:'redacted_thinking',data}） */
+  thinkingRedacted?: string
 }
 
 /** Provider 适配器（ACL，C-02）：统一签名，消解 Provider 差异 */

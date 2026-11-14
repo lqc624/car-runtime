@@ -673,7 +673,17 @@ function toAnthropic(req: LlmRequest, apiKey: string, cache: { rolling: boolean;
     flushToolResults()
     if (m.role === 'assistant' && m.content != null && typeof m.content === 'object' && 'toolCall' in (m.content as object)) {
       const tc = (m.content as { toolCall: { id: string; tool: string; args: unknown } }).toolCall
-      turns.push({ role: 'assistant', content: [{ type: 'tool_use', id: tc.id, name: tc.tool, input: tc.args ?? {} }] })
+      // 1.21（R-TOKENHUB-1 / D-T4）：工具环回传——投影层附加的 thinking（同 turn 原始 assistant
+      // 消息的 thinking 块）前置重放（Anthropic 规范：thinking 须位于同消息 text/tool_use 之前；
+      // tokenhub 等网关对缺回传 400——R-TOKENHUB-1 实证）。无 thinking = 形态与 1.20 逐字节一致
+      // （D-T5 兼容线，golden 不动）。
+      const th = (m.content as { thinking?: { text?: string; signature?: string; redacted?: boolean } }).thinking
+      const thinkingBlock = th?.text?.length
+        ? th.redacted
+          ? { type: 'redacted_thinking', data: th.text }
+          : { type: 'thinking', thinking: th.text, ...(th.signature ? { signature: th.signature } : {}) }
+        : undefined
+      turns.push({ role: 'assistant', content: [...(thinkingBlock ? [thinkingBlock] : []), { type: 'tool_use', id: tc.id, name: tc.tool, input: tc.args ?? {} }] })
     } else {
       turns.push({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })
     }
@@ -746,6 +756,9 @@ async function* parseAnthropicSseStream(body: AsyncIterable<Uint8Array>, model: 
         const block = evt.content_block
         if (block?.type === 'tool_use') {
           yield { toolCallDelta: { index: evt.index, id: block.id, name: block.name } }
+        } else if (block?.type === 'redacted_thinking' && typeof block.data === 'string' && block.data.length) {
+          // 1.21（R-TOKENHUB-1 / D-T1）：redacted_thinking 全文单发（回传形态 {type:'redacted_thinking',data}）
+          yield { thinkingRedacted: block.data }
         }
       } else if (type === 'content_block_delta') {
         const d = evt.delta
@@ -753,8 +766,13 @@ async function* parseAnthropicSseStream(body: AsyncIterable<Uint8Array>, model: 
           yield { delta: d.text }
         } else if (d?.type === 'input_json_delta' && typeof d.partial_json === 'string' && d.partial_json.length) {
           yield { toolCallDelta: { index: evt.index, argumentsDelta: d.partial_json } }
+        } else if (d?.type === 'thinking_delta' && typeof d.thinking === 'string' && d.thinking.length) {
+          // 1.21（R-TOKENHUB-1 / D-T1）：thinking 文本增量捕获（原容错跳过 → 落链 + 工具环回传）
+          yield { thinkingDelta: d.thinking }
+        } else if (d?.type === 'signature_delta' && typeof d.signature === 'string' && d.signature.length) {
+          yield { thinkingSignatureDelta: d.signature }
         }
-        // thinking_delta / citations_delta 等非 CAR 消费面：容错跳过
+        // citations_delta 等其余非 CAR 消费面：容错跳过
       } else if (type === 'message_start') {
         // 1.11-S1（D-33）：input 侧采集（usage 嵌套在 message 下）
         const u = (evt.message as Record<string, unknown> | undefined)?.usage
