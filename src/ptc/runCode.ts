@@ -34,7 +34,12 @@ export interface PtcSpanBridge {
   complete(startMs: number, endMs: number, outcome: string, error?: unknown): void
 }
 
-const WORKER_PATH = join(dirname(fileURLToPath(import.meta.url)), 'worker-entry.ts')
+// P-A 存量发现修复（2026-11-14，R-DRILL-1 同类：dist 消费调用点未核）：worker 入口按宿主模块形态
+// 双取——src 布局（runCode.ts → worker-entry.ts，type-strip 直跑）与 dist 布局（runCode.js →
+// worker-entry.js，registry/平台 seam/Docker 消费方）。原硬编 .ts 在 dist 消费面必挂
+// （Cannot find module <dist>/ptc/worker-entry.ts——平台 P-A 接线测试实证）。
+const MODULE_FILE = fileURLToPath(import.meta.url)
+const WORKER_PATH = join(dirname(MODULE_FILE), `worker-entry${MODULE_FILE.endsWith('.js') ? '.js' : '.ts'}`)
 const MAX_CONCURRENT = 4
 let active = 0
 
