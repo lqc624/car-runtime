@@ -655,12 +655,33 @@ function toAnthropic(req: LlmRequest, apiKey: string, cache: { rolling: boolean;
     turns.push({ role: 'user', content: pendingToolResults })
     pendingToolResults = []
   }
+  // 1.21.1（R-TOKENHUB-1 二分实证）：同轮拆分重放合并——投影形态 [assistant(text)][assistant(toolCall)…]
+  // 在 tools 声明在场时被 tokenhub 网关严格路径拒绝（400 reasoning_content must be passed back，
+  // 与 thinking 是否已在 wire 无关——P-B/P-C vs P-D 四探针二分定案）；provider 原始回复 = 单条
+  // [thinking?, text?, tool_use…] 消息，合并重放（P-D）过审。合并口径：
+  //  - 相邻 assistant(toolCall) 聚合（同 turn 多 tool_use 单条）；thinking 取首条附加；
+  //  - 紧邻前驱为 assistant 纯文本消息 → 弹回合并为 [thinking?, text, tool_use…]；
+  //  - 无相邻文本的 toolCall 消息形态不变（[thinking?, tool_use]）——非工具环链逐字节兼容（D-T5）。
+  let pendingTu: { toolCalls: Array<{ type: 'tool_use'; id: string; name: string; input: unknown }>; thinkingBlock?: Record<string, unknown> } | null = null
+  const flushTu = () => {
+    if (!pendingTu) return
+    const prev = turns[turns.length - 1]
+    const { thinkingBlock, toolCalls } = pendingTu
+    if (prev && prev.role === 'assistant' && typeof prev.content === 'string') {
+      turns.pop()
+      turns.push({ role: 'assistant', content: [...(thinkingBlock ? [thinkingBlock] : []), { type: 'text', text: prev.content }, ...toolCalls] })
+    } else {
+      turns.push({ role: 'assistant', content: [...(thinkingBlock ? [thinkingBlock] : []), ...toolCalls] })
+    }
+    pendingTu = null
+  }
   for (const m of req.messages) {
     if (m.role === 'system') {
       system.push(typeof m.content === 'string' ? m.content : JSON.stringify(m.content))
       continue
     }
     if (m.role === 'toolResult') {
+      flushTu() // tool_result 前 = 同轮 assistant 消息收口（[text?,tu…] 先于 tool_result 出站）
       const p = m.content as { id?: string; result?: unknown; error?: string }
       pendingToolResults.push({
         type: 'tool_result',
@@ -670,24 +691,26 @@ function toAnthropic(req: LlmRequest, apiKey: string, cache: { rolling: boolean;
       })
       continue
     }
-    flushToolResults()
     if (m.role === 'assistant' && m.content != null && typeof m.content === 'object' && 'toolCall' in (m.content as object)) {
       const tc = (m.content as { toolCall: { id: string; tool: string; args: unknown } }).toolCall
       // 1.21（R-TOKENHUB-1 / D-T4）：工具环回传——投影层附加的 thinking（同 turn 原始 assistant
-      // 消息的 thinking 块）前置重放（Anthropic 规范：thinking 须位于同消息 text/tool_use 之前；
-      // tokenhub 等网关对缺回传 400——R-TOKENHUB-1 实证）。无 thinking = 形态与 1.20 逐字节一致
-      // （D-T5 兼容线，golden 不动）。
+      // 消息的 thinking 块）前置重放。1.21.1：thinking 块随合并缓冲进同轮单条消息（见 flushTu 注记）；
+      // 无 thinking = 1.20 形态。
       const th = (m.content as { thinking?: { text?: string; signature?: string; redacted?: boolean } }).thinking
       const thinkingBlock = th?.text?.length
         ? th.redacted
           ? { type: 'redacted_thinking', data: th.text }
           : { type: 'thinking', thinking: th.text, ...(th.signature ? { signature: th.signature } : {}) }
         : undefined
-      turns.push({ role: 'assistant', content: [...(thinkingBlock ? [thinkingBlock] : []), { type: 'tool_use', id: tc.id, name: tc.tool, input: tc.args ?? {} }] })
-    } else {
-      turns.push({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })
+      if (!pendingTu) pendingTu = { toolCalls: [], ...(thinkingBlock ? { thinkingBlock } : {}) }
+      pendingTu.toolCalls.push({ type: 'tool_use', id: tc.id, name: tc.tool, input: tc.args ?? {} })
+      continue
     }
+    flushTu()
+    flushToolResults()
+    turns.push({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })
   }
+  flushTu()
   flushToolResults()
   // 1.20-K1（D-48 P2）：滚动断点在白名单命中时挂尾部消息（缺省 1 个）——system 断点（P1）
   // 与消息断点独立，off 时两者俱灭（rollingCacheAllowed 内已连坐）

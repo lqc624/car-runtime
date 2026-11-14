@@ -246,6 +246,61 @@ test('S70: toAnthropic——thinking 块前置（signature 透传 / redacted 形
   }, '无 thinking = 1.20 形态逐字节（D-T5 兼容线，golden 不动）')
 })
 
+// ==================== s70b：1.21.1 同轮合并（tools 声明在场严格路径——二分实证 P-B/P-C 400 vs P-D 200） ====================
+
+test('S70b: 同轮合并——[text][tu(thinking)] → 单条 [thinking,text,tu]；连续 tu 聚合；tu-only / text-only 形态不变', async () => {
+  const seen: RequestInit[] = []
+  const adapter = createAnthropicAdapter({ baseUrl: 'https://api.test', fetchImpl: (async (_u: string | URL, init?: RequestInit) => {
+    seen.push(init!)
+    return sseResponse(anthropicSse(TEXT_EVENTS('done')))
+  }) as typeof fetch })
+  const run = (messages: unknown[]) => drain(adapter.chat({ model: 'm', messages: messages as never, tools: [{ name: 'fs_read', description: 'x', parameters: { type: 'object' }, declaredSideEffect: 'readonly' }] }))
+
+  // 合并：text 紧邻 thinking+tu（桌面 400 实况同构）→ 单条 [thinking, text, tool_use]
+  await run([
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: '推理文本' },
+    { role: 'assistant', content: { toolCall: { id: 'tu-1', tool: 'fs_read', args: { p: 1 } }, thinking: { text: 'TH' } } },
+    { role: 'toolResult', content: { id: 'tu-1', result: 'r' } },
+  ])
+  assert.deepEqual(JSON.parse(seen[0]!.body as string).messages, [
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: [{ type: 'thinking', thinking: 'TH' }, { type: 'text', text: '推理文本' }, { type: 'tool_use', id: 'tu-1', name: 'fs_read', input: { p: 1 } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: '"r"' }] },
+  ], '合并 = provider 原始单条形态（严格路径过审形态）')
+
+  // 连续 tu 聚合（同 turn 多 tool_use 单条 + 前驱 text 弹回）
+  await run([
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: '文本' },
+    { role: 'assistant', content: { toolCall: { id: 'tu-a', tool: 'f1', args: {} } } },
+    { role: 'assistant', content: { toolCall: { id: 'tu-b', tool: 'f2', args: {} } } },
+    { role: 'toolResult', content: { id: 'tu-a', result: 'ra' } },
+    { role: 'toolResult', content: { id: 'tu-b', result: 'rb' } },
+  ])
+  assert.deepEqual(JSON.parse(seen[1]!.body as string).messages[1].content, [
+    { type: 'text', text: '文本' },
+    { type: 'tool_use', id: 'tu-a', name: 'f1', input: {} },
+    { type: 'tool_use', id: 'tu-b', name: 'f2', input: {} },
+  ], '连续 toolCall 消息聚合单条 + text 弹回合并')
+
+  // tu-only（无相邻文本）形态不变（[tool_use]，thinking 前置）；text-only 字符串形态不变
+  await run([
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: { toolCall: { id: 'tu-c', tool: 'f3', args: {} }, thinking: { text: 'T3' } } },
+    { role: 'toolResult', content: { id: 'tu-c', result: 'r' } },
+    { role: 'user', content: 'q2' },
+    { role: 'assistant', content: '纯文本回复' },
+  ])
+  assert.deepEqual(JSON.parse(seen[2]!.body as string).messages, [
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: [{ type: 'thinking', thinking: 'T3' }, { type: 'tool_use', id: 'tu-c', name: 'f3', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-c', content: '"r"' }] },
+    { role: 'user', content: 'q2' },
+    { role: 'assistant', content: '纯文本回复' },
+  ], 'tu-only / text-only 形态与 1.21.0 逐字节一致（D-T5 兼容线维持）')
+})
+
 // ==================== s71：E2E enforce 契约假网关（R-TOKENHUB-1 复现闭环） ====================
 
 test('S71: E2E——enforce 契约假网关：续轮缺 thinking → 400 tokenhub 同文复现；有 thinking → 两轮工具环全通', async () => {
