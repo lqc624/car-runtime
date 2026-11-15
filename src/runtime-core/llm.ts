@@ -686,10 +686,23 @@ function toAnthropic(req: LlmRequest, apiKey: string, cache: { rolling: boolean;
   const system: string[] = []
   const turns: Array<{ role: 'user' | 'assistant'; content: unknown }> = []
   let pendingToolResults: Array<Record<string, unknown>> = []
+  /**
+   * 1.24.3（F6 / 桌面 B-2 真模型演练 2026-11-15 wire 实锤）：tool_result 缓冲未清时到达的
+   * user 文本消息缓冲——授权门未决（120s 窗口）期间用户 steer 消息落链（合法链形态：引导
+   * 排队事件在他 turn 进行中落链，1.15-S2 D-47 口径）→ 投影里 user 夹在 assistant(toolCall)
+   * 与其 toolResult 之间 → anthropic Messages 协议要求 tool_use 的下一条消息携带其
+   * tool_result → wire 永不相邻（tokenhub 400「tool_calls must be followed by tool messages」，
+   * F4/F5 之后第三笔同族——「卡未决 + 用户插话」形态此前从未被真模型演练覆盖）。
+   * 协议正常化：tool_result 缓冲优先出站，插队 user 文本按序顺延在其后（事实序无损——
+   * 工具结果事实先于用户消息发生）；无插队形态 wire 逐字节不变（缓冲恒空）。
+   */
+  let pendingUserTexts: Array<{ role: 'user'; content: unknown }> = []
   const flushToolResults = () => {
     if (!pendingToolResults.length) return
     turns.push({ role: 'user', content: pendingToolResults })
     pendingToolResults = []
+    for (const u of pendingUserTexts) turns.push(u)
+    pendingUserTexts = []
   }
   // 1.21.1（R-TOKENHUB-1 二分实证）：同轮拆分重放合并——投影形态 [assistant(text)][assistant(toolCall)…]
   // 在 tools 声明在场时被 tokenhub 网关严格路径拒绝（400 reasoning_content must be passed back，
@@ -764,6 +777,12 @@ function toAnthropic(req: LlmRequest, apiKey: string, cache: { rolling: boolean;
       }
       if (!pendingTu) pendingTu = { toolCalls: [], ...(thinkingBlocks.length ? { thinkingBlocks } : {}) }
       pendingTu.toolCalls.push({ type: 'tool_use', id: tc.id, name: tc.tool, input: tc.args ?? {} })
+      continue
+    }
+    // 1.24.3（F6）：tool_result 缓冲未清时到达的 user 文本（steer 排队插队形态）→ 缓冲顺延，
+    // tool_result 先出站（协议相邻性）——其余角色/形态照常出站
+    if (m.role === 'user' && (pendingToolResults.length > 0 || pendingTu) && typeof m.content === 'string') {
+      pendingUserTexts.push({ role: 'user', content: m.content })
       continue
     }
     flushTu()

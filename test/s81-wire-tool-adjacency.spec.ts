@@ -120,3 +120,31 @@ test('S81-2 单步环 wire 兼容：assistant → user[tool_result] → user 形
     ], '单步环无回归（无 thinking = 1.20 形态）')
   } finally { await srv.close() }
 })
+
+test('S81-3 卡未决插队 user：steer 消息夹在 toolCall 与 toolResult 之间 → 协议正常化（F6 回归锚点）', async () => {
+  const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = []
+  const srv = await wireServer(bodies)
+  try {
+    const adapter = createAnthropicAdapter({ baseUrl: `http://127.0.0.1:${srv.port}`, provider: 'anthropic', retries: 0, firstByteMs: 5000, timeoutMs: 10000 })
+    for await (const c of adapter.chat({
+      model: 'm1',
+      messages: [
+        { role: 'user', content: 'q1' },
+        { role: 'assistant', content: { toolCall: { id: 'call-X', tool: 't', args: {} } } },
+        { role: 'user', content: 'steer-插队消息（授权门未决期间用户发的话）' },
+        { role: 'toolResult', content: { id: 'call-X', error: 'authorization-denied', result: undefined } },
+        { role: 'user', content: 'q2' },
+      ],
+      tools: [],
+      maxTokens: 300,
+    } as Parameters<typeof adapter.chat>[0])) { void c }
+    const seq = summarize(bodies[0]!)
+    assert.deepEqual(seq, [
+      'user[q1]',
+      'assistant[tool_use(call-X)]',
+      'user[tool_result(call-X)]',
+      'user[steer-插队消息（授权门未决期间用户]', // summarize 截断 20 字符
+      'user[q2]',
+    ], 'F6 修复形态：tool_result 先出站，插队 user 顺延其后（协议相邻性）')
+  } finally { await srv.close() }
+})
