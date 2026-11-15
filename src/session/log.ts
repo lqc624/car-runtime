@@ -173,7 +173,17 @@ export class SessionLog {
         }
         continue // thinking 不单独成消息（无独立回传语义）
       }
-      if (e.kind === 'system') out.push({ role: 'system', content: e.payload })
+      if (e.kind === 'system') {
+        // 1.24.1（F4 / 桌面 B-2 演练 2026-11-15 实锤）：对象形态 system = 宿主审计叙事
+        //（browser/*、bash/*、session/* 等 payload.type 载体）——不投影（model_visible=0 与
+        // settlement 同纪律）。对象叙事落在 assistant(toolCall) 与 toolResult 之间会破坏
+        // tool 消息相邻性——openai 严格网关 400（"insufficient tool messages following"，
+        // tokenhub deepseek 槽演练实锤）；anthropic 宽容网关则表现为叙事脏上下文。
+        // payload 字符串 = system prompt（1.4-S2）/ persona 注入（T-MP）——设计内模型可见，保持投影。
+        // 隔断语义不变（对象 system 仍隔断跨叙事 thinking 附加——上一行口径）。
+        if (typeof e.payload !== 'string') continue
+        out.push({ role: 'system', content: e.payload })
+      }
       else if (e.kind === 'user') out.push({ role: 'user', content: e.payload })
       else if (e.kind === 'assistant') out.push({ role: 'assistant', content: e.payload })
       else if (e.kind === 'toolCall') {
