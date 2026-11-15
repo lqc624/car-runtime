@@ -16,6 +16,7 @@
  */
 import type { SessionLog } from '../session/log.ts'
 import { CarM8Error } from '../runtime-core/errors.ts'
+import { appendSettlement } from './settlement.ts'
 
 export type StepOutcome = 'completed' | 'max-tokens' | 'null'
 export type TurnEndReason = 'completed' | 'max-tokens' | 'aborted' | 'error' | 'blocked' | 'interrupted'
@@ -129,13 +130,16 @@ export async function runTurn(opts: {
 
   // 1.11-S2（D-33）：turnEnd 落链单点包装——聚合本 turn usage 事件（无 usage 不带键，
   // 缺省=未采集向后兼容）；reason 保持 meta 首键，usage 恒为加法尾键
-  const closeTurn = (meta: Record<string, unknown>) => {
+  // 1.24-W2（D-W2-2）：turnEnd 之前先落 settlement 结算回执（turnEnd 保持终止标记语义；
+  // hints 仅 terminate 收口传递 stopRequested——不落 turnEnd meta，D-W2-4）
+  const closeTurn = (meta: Record<string, unknown>, hints?: { stopRequested?: boolean }) => {
     const usage = turnUsageFrom(log, turnId)
     // 1.18.2-K8（R-K7-2）：计量缺失 fail-visible——商汤网关实测 20% 概率 message_delta
     // 不带 usage（流正常回复但计量整条缺席）→ 缺失口径纪律不落半条事实（turnUsageFrom
     // undefined），缺失本身在此显式标注：本 turn 存在 assistant 事件（模型有可见输出 ⇒
     // 必有请求）而无 usage 聚合时带 usageMissing: true（加法尾键，与 usage 同语义位）
     const hasAssistant = log.events.some((e) => e.kind === 'assistant' && e.turnId === turnId)
+    appendSettlement(log, turnId, meta, hints)
     return log.append('runtime', 'turnEnd', turnId, null, {
       ...meta,
       ...(usage ? { usage } : hasAssistant ? { usageMissing: true } : {}),
@@ -301,7 +305,8 @@ export async function runTurn(opts: {
         const agg = preset.aggregate ?? {}
         const abortedNow = (agg.terminate ?? 'all') === 'any' ? batch.terminateVotes > 0 : batch.terminateAll
         if (abortedNow) { // terminate 收口：默认 AND（整批），可配置 any
-          const seq = closeTurn({ reason: 'aborted' }).seq
+          // 1.24-W2：工具主动 stop 语义 → settlement stopRequested=true（hints 不落 meta，D-W2-4）
+          const seq = closeTurn({ reason: 'aborted' }, { stopRequested: true }).seq
           trail.push({ seq, reason: 'aborted' })
           return { reason: 'aborted', steps, endReasonTrail: trail }
         }

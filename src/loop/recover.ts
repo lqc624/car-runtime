@@ -7,6 +7,7 @@
  *  - 副作用审计：补记事件带 recovered=true 标记（副作用是否落地由恢复层显式声明为未知）
  */
 import type { SessionLog, SessionEvent } from '../session/log.ts'
+import { appendSettlement } from './settlement.ts'
 
 export interface RecoveryReport {
   /** 补记 interrupted 的 turn 数 */
@@ -39,7 +40,10 @@ export function recoverInterrupted(log: SessionLog): RecoveryReport {
     report.pairedCalls++
   }
   // 未闭合 turn → 补记 turnEnd=interrupted（不可与 aborted 混用）
+  // 1.24-W2（D-W2-2）：补记前先落 settlement——部分链对账 = hasUnknownOutcomes 主战场
+  // （上方成对补记的 recovered:true 合成结果在结算里按「结果不明」显式记账，不丢信号）
   for (const turnId of openTurns) {
+    appendSettlement(log, turnId, { reason: 'interrupted', recovered: true })
     log.append('runtime', 'turnEnd', turnId, null, { reason: 'interrupted', recovered: true })
     report.turnsClosed++
   }
