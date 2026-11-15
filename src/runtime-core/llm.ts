@@ -729,6 +729,14 @@ function toAnthropic(req: LlmRequest, apiKey: string, cache: { rolling: boolean;
       continue
     }
     if (m.role === 'assistant' && m.content != null && typeof m.content === 'object' && 'toolCall' in (m.content as object)) {
+      // 1.24.2（F5 / 桌面 B-2 真模型演练 2026-11-15 wire 实锤）：新 toolCall 到达前先出站挂起的
+      // tool_result 缓冲——连续多步工具环的合法形态 = assistant(tu1) → user[tool_result1] →
+      // assistant(tu2) → …（anthropic Messages 协议要求 tool_use 的下一条消息携带其 tool_result；
+      // openai 严格网关同校验）。缺此 flush 时 wire 退化为 assistant(tu1) → assistant(tu2) →
+      // user[results 合并]——tokenhub 400「tool_calls must be followed by tool messages」。
+      // 此前未暴露 = 真模型演练均为「第二轮纯文本回答」形态（教训重申：形态级契约缺口只有
+      // 真网关 wire 捕获能暴露——1.21.1 同案）。
+      flushToolResults()
       const tc = (m.content as { toolCall: { id: string; tool: string; args: unknown } }).toolCall
       // 1.21（R-TOKENHUB-1 / D-T4）：工具环回传——投影层附加的 thinking（同 turn 原始 assistant
       // 消息的 thinking 块）前置重放。1.21.1：thinking 块随合并缓冲进同轮单条消息（见 flushTu 注记）；
