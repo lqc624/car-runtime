@@ -20,6 +20,12 @@ export class CarM8Error extends Error {
     readonly userHint?: string,
     /** 重试建议（A080001 不重试 / B080001 退避后重试） */
     readonly retryable = false,
+    /**
+     * 1.23-W1（D-W1-3）：失败细类（LlmErrorKind 注册表）——B080001 一码多形态的分型标注，
+     * 经 runTurn closeTurn 落 turnEnd meta.kind（加法尾键，消费面免字符串反解）。
+     * 缺省缺席 = 1.22 形态（A080001 凭据缺失以独立码区分，无需 kind）。
+     */
+    readonly kind?: string,
   ) {
     super(`${slug}: ${message}（${code}）`)
     this.name = 'CarM8Error'
@@ -36,12 +42,13 @@ export function credentialMissing(provider: string, searched: string[]): CarM8Er
   )
 }
 
-export function providerUnreachable(detail: string): CarM8Error {
+export function providerUnreachable(detail: string, kind?: string): CarM8Error {
   return new CarM8Error(
     'B080001',
     'CAR-E-LLM-UNREACHABLE',
     `LLM Provider 不可达/重试耗尽：${detail}`,
     '模型服务暂时不可用，本轮已停止',
     true,
+    kind,
   )
 }

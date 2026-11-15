@@ -74,8 +74,14 @@ export interface TurnPreset {
 
 export interface TurnResult { reason: TurnEndReason; steps: number; endReasonTrail: Array<{ seq: number; reason: TurnEndReason }> }
 
+/**
+ * 1.23-W1（D-W1-6）：取消时机标注（W-0 审计 F-W0-3——aborted 三路径链上不区分）——
+ * 'before-request' = 请求未发出（runTurn 循环头 / chatStep 零 chunk 流结束检查）；
+ * 'in-flight' = 在途打断（chatStep chunk 间隙 / 有 chunk 后的流结束检查）。
+ * 缺省缺席 = 1.22 形态（terminate 型 abort 为工具主动收口语义，非取消，不带键）。
+ */
 export class TurnAborted extends Error {
-  constructor() { super('CAR-ABORTED: turn cancelled by user') }
+  constructor(readonly abortedAt?: 'before-request' | 'in-flight') { super('CAR-ABORTED: turn cancelled by user') }
 }
 
 /**
@@ -231,7 +237,8 @@ export async function runTurn(opts: {
   try {
     while (steps < maxSteps) {
       if (signal?.aborted) {
-        const seq = closeTurn({ reason: 'aborted' }).seq
+        // 1.23-W1（D-W1-6）：循环头取消 = 请求未发出（无在途请求）
+        const seq = closeTurn({ reason: 'aborted', abortedAt: 'before-request' }).seq
         trail.push({ seq, reason: 'aborted' })
         return { reason: 'aborted', steps, endReasonTrail: trail }
       }
@@ -320,17 +327,19 @@ export async function runTurn(opts: {
     return { reason: 'error', steps, endReasonTrail: trail }
   } catch (e) {
     if (e instanceof TurnAborted) {
-      const seq = closeTurn({ reason: 'aborted' }).seq
+      // 1.23-W1（D-W1-6）：chatStep 甄别过的取消时机随异常携带（terminate 型 abort 不经此路径）
+      const seq = closeTurn({ reason: 'aborted', ...(e.abortedAt ? { abortedAt: e.abortedAt } : {}) }).seq
       trail.push({ seq, reason: 'aborted' })
       return { reason: 'aborted', steps, endReasonTrail: trail }
     }
     // 1.4-S4：CarM8Error 保形——code/userHint/retryable 进 turnEnd（A080001 引导文案「请运行
-    // car doctor」可达用户；非 CarM8Error 维持 String(e) 口径不变）
+    // car doctor」可达用户；非 CarM8Error 维持 String(e) 口径不变）；
+    // 1.23-W1（D-W1-3）：+kind 失败细类（加法尾键——B080001 多形态分型，审计 F-W0-2）
     const m8 = e instanceof CarM8Error
     const detail = m8 ? `${e.slug}: ${e.message}` : String(e)
     const seq = closeTurn({
       reason: 'error', detail,
-      ...(m8 ? { code: e.code, userHint: e.userHint, retryable: e.retryable } : {}),
+      ...(m8 ? { code: e.code, userHint: e.userHint, retryable: e.retryable, ...(e.kind ? { kind: e.kind } : {}) } : {}),
     }).seq
     trail.push({ seq, reason: 'error' })
     return { reason: 'error', steps, endReasonTrail: trail }

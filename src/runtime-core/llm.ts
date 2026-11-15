@@ -244,7 +244,9 @@ async function* streamSsePost(spec: SsePostSpec, parse: (body: AsyncIterable<Uin
       if (!res.ok) {
         const text = await res.text().catch(() => '')
         // 4xx 业务错不重试（§3.5.4）；错误信息不含凭据（凭据值不进错误路径）
-        yield { finishReason: 'error', error: { code: 'B080001', message: `provider HTTP ${res.status}${text ? `：${text.slice(0, 200)}` : ''}` } }
+        // 1.23-W1（D-W1-5）：4xx 细类标注——overflow 特征命中 = context-limit-suspect（疑似），否则 transport-4xx
+        const kind = contextLimitSuspect(text) ? 'context-limit-suspect' : 'transport-4xx'
+        yield { finishReason: 'error', error: { code: 'B080001', message: `provider HTTP ${res.status}${text ? `：${text.slice(0, 200)}` : ''}`, kind } }
         return
       }
       if (!res.body) throw new Retryable('响应无 body 流')
@@ -260,7 +262,8 @@ async function* streamSsePost(spec: SsePostSpec, parse: (body: AsyncIterable<Uin
       // 流自然结束但未给 finishReason = 异常终止（AL-05 口径：缺失显式化，禁吞没）；
       // 已携带 finishReason 的流原样收口——兜底不得追加（M8-BUG-1 口径延续）
       if (!sawFinish) {
-        yield { finishReason: 'error', error: { code: 'B080001', message: '流结束未携带 finish_reason（AL-05）' } }
+        // 1.23-W1：细类 no-finish-reason（审计 F-W0-2 拆型）
+        yield { finishReason: 'error', error: { code: 'B080001', message: '流结束未携带 finish_reason（AL-05）', kind: 'no-finish-reason' } }
       }
       return
     } catch (e) {
@@ -274,11 +277,11 @@ async function* streamSsePost(spec: SsePostSpec, parse: (body: AsyncIterable<Uin
         continue
       }
       if (beforeFirstByte) {
-        // 重试耗尽 → B080001（BD-04：消费方 runTurn 以 error 收口）
-        throw providerUnreachable(`${(e as Error).name}: ${(e as Error).message}（尝试 ${attempt + 1}/${spec.retries + 1}，${Date.now() - started}ms）`)
+        // 重试耗尽 → B080001（BD-04：消费方 runTurn 以 error 收口）；1.23-W1 细类 transport-exhausted
+        throw providerUnreachable(`${(e as Error).name}: ${(e as Error).message}（尝试 ${attempt + 1}/${spec.retries + 1}，${Date.now() - started}ms）`, 'transport-exhausted')
       }
-      // 流中途失败：已消费 chunk 不可重放 → error chunk 收口
-      yield { finishReason: 'error', error: { code: 'B080001', message: `流中途失败：${(e as Error).message}` } }
+      // 流中途失败：已消费 chunk 不可重放 → error chunk 收口；1.23-W1 细类 stream-midbreak
+      yield { finishReason: 'error', error: { code: 'B080001', message: `流中途失败：${(e as Error).message}`, kind: 'stream-midbreak' } }
       return
     } finally {
       clearTimeout(firstByteTimer)
@@ -316,6 +319,23 @@ const FINISH_MAP: Record<string, LlmChunk['finishReason']> = {
 }
 
 class Retryable extends Error {}
+
+/**
+ * 1.23-W1（D-W1-5）：context-limit-suspect 确定性关键词表——仅用于 4xx 错误体、只收高置信特征；
+ * 标注语义 = **疑似**（消费面文案须带「疑似」，禁估算禁 LLM 判断）；未命中 = transport-4xx。
+ */
+const CONTEXT_LIMIT_PATTERNS: RegExp[] = [
+  /context length/i,
+  /maximum context/i,
+  /context[_ ]window/i,
+  /prompt is too long/i,
+  /too many tokens/i,
+  /input tokens? exceed/i,
+  /exceeds? the (maximum )?(context|token)/i,
+  /上下文(长度|超限)/,
+  /超出上下文/,
+]
+const contextLimitSuspect = (text: string): boolean => CONTEXT_LIMIT_PATTERNS.some((p) => p.test(text))
 
 /**
  * 1.11-S1（D-33 / 计量设计 §1.1）：openai usage 归一——prompt_tokens 含 cached，inputTokens
@@ -399,13 +419,21 @@ async function* parseSseStream(body: AsyncIterable<Uint8Array>, model: string, a
         if (usage) yield { usage }
         continue
       }
+      // 1.23-W1（D-W1-4 / D-W1-1）：finish 终态附带 error 细类——未映射 = unmapped-finish；
+      // content_filter（openai 族唯一映射 'aborted' 的信号）= refusal（与 anthropic stop_reason=refusal 对齐）
+      const finishError: LlmChunk['error'] | undefined =
+        finish === 'error'
+          ? { code: 'B080001', message: `未映射的 finish_reason "${raw}"`, kind: 'unmapped-finish' }
+          : finish === 'aborted'
+            ? { code: 'B080001', message: `provider content_filter (finish_reason="${raw}")`, kind: 'refusal' }
+            : undefined
       const chunks: LlmChunk[] = []
       if (toolCallDeltas.length === 0) {
         chunks.push({
           ...(reasoningContent !== undefined ? { thinkingDelta: reasoningContent } : {}),
           ...(text !== undefined ? { delta: text } : {}),
           ...(finish !== undefined
-            ? { finishReason: finish, ...(finish === 'error' ? { error: { code: 'B080001', message: `未映射的 finish_reason "${raw}"` } } : {}) }
+            ? { finishReason: finish, ...(finishError ? { error: finishError } : {}) }
             : {}),
         })
       } else {
@@ -416,7 +444,7 @@ async function* parseSseStream(body: AsyncIterable<Uint8Array>, model: string, a
             ...(i === 0 && text !== undefined ? { delta: text } : {}),
             toolCallDelta: toolCallDeltas[i],
             ...(last && finish !== undefined
-              ? { finishReason: finish, ...(finish === 'error' ? { error: { code: 'B080001', message: `未映射的 finish_reason "${raw}"` } } : {}) }
+              ? { finishReason: finish, ...(finishError ? { error: finishError } : {}) }
               : {}),
           })
         }
@@ -835,17 +863,22 @@ async function* parseAnthropicSseStream(body: AsyncIterable<Uint8Array>, model: 
         const usage = mergeAnthropicUsage(startUsage, (evt.usage ?? null) as Record<string, unknown> | null, model, adapterId)
         if (raw != null) {
           const finish = ANTHROPIC_STOP_REASON_MAP[String(raw)]
+          // 1.23-W1（D-W1-4 / D-W1-1）：stop_reason 细类标注——refusal 附加 error chunk（kind 'refusal'，
+          // 与 openai content_filter 对齐；finishReason 映射不动）；未映射 = unmapped-finish
           const chunk: LlmChunk = finish
-            ? { finishReason: finish }
-            : { finishReason: 'error', error: { code: 'B080001', message: `未映射的 stop_reason "${raw}"` } }
+            ? finish === 'aborted'
+              ? { finishReason: finish, error: { code: 'B080001', message: `provider refusal (stop_reason="${raw}")`, kind: 'refusal' } }
+              : { finishReason: finish }
+            : { finishReason: 'error', error: { code: 'B080001', message: `未映射的 stop_reason "${raw}"`, kind: 'unmapped-finish' } }
           yield usage ? { ...chunk, usage } : chunk
         } else if (usage) {
           // delta 未携 stop_reason 但携 usage（网关形态）：usage 不随缺失终态信号丢失
           yield { usage }
         }
       } else if (type === 'error') {
-        // 流内 error 事件（overloaded_error 等）→ error chunk 收口（后续 message_delta 由守卫拦冲突）
-        yield { finishReason: 'error', error: { code: 'B080001', message: `provider 流错误：${evt.error?.message ?? JSON.stringify(evt).slice(0, 200)}` } }
+        // 流内 error 事件（overloaded_error 等）→ error chunk 收口（后续 message_delta 由守卫拦冲突）；
+        // 1.23-W1 细类 provider-stream-error
+        yield { finishReason: 'error', error: { code: 'B080001', message: `provider 流错误：${evt.error?.message ?? JSON.stringify(evt).slice(0, 200)}`, kind: 'provider-stream-error' } }
       }
     }
   }

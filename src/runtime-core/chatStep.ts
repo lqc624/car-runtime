@@ -23,7 +23,7 @@ import type { RuntimeCore } from './llm.ts'
 import type { LlmUsage, ToolDefinition } from './types.ts'
 import { StreamRedactor } from './redaction.ts'
 import { scanSecrets } from '../security/secrets.ts'
-import { providerUnreachable } from './errors.ts'
+import { CarM8Error, providerUnreachable } from './errors.ts'
 
 export interface ChatStepOptions {
   core: RuntimeCore
@@ -119,6 +119,12 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
   const thinkingRedactor = new StreamRedactor()
   let stopReason: ModelStep['stopReason'] | undefined
   let errorDetail: string | undefined
+  // 1.23-W1（D-W1-2）：error chunk 细类捕获（最后一条 error chunk 的 kind——providerUnreachable
+  // 携带 → runTurn turnEnd meta.kind；缺失 = 1.22 形态）
+  let errorKind: string | undefined
+  // 1.23-W1（D-W1-6）：零 chunk 甄别——流结束检查抛 TurnAborted 时区分「请求未发出（attempt 前
+  // 静默收口）」与「在途打断」；chunk 间隙路径恒 in-flight
+  let sawChunk = false
   let usage: LlmUsage | undefined
 
   const stream = core.chat({
@@ -133,8 +139,10 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
     ...(opts.log.sessionId ? { metadata: { sessionId: opts.log.sessionId, turnId, traceId: `${opts.log.sessionId}:${turnId}` } } : {}),
   })
   for await (const chunk of stream) {
-    // 1.4-S4（D-19）：chunk 间隙取消——此刻 assistant 尚未落链（流完才 append），无半截消息
-    if (opts.signal?.aborted) throw new TurnAborted()
+    sawChunk = true
+    // 1.4-S4（D-19）：chunk 间隙取消——此刻 assistant 尚未落链（流完才 append），无半截消息；
+    // 1.23-W1（D-W1-6）：在途打断标注 in-flight
+    if (opts.signal?.aborted) throw new TurnAborted('in-flight')
     if (chunk.delta !== undefined) {
       const masked = redactor.push(chunk.delta)
       text += masked
@@ -171,13 +179,18 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
         if (masked) opts.onDelta({ thinkingDelta: masked })
       }
     }
-    if (chunk.error) errorDetail = chunk.error.message
+    if (chunk.error) {
+      errorDetail = chunk.error.message
+      errorKind = chunk.error.kind // 1.23-W1（D-W1-2）：细类透传（最后一条 error chunk 为准）
+    }
     if (chunk.usage) usage = chunk.usage // D-33：附着于最后一个 chunk——后到覆盖
     if (chunk.finishReason !== undefined) stopReason = chunk.finishReason === 'aborted' ? 'error' : chunk.finishReason
   }
   // 1.4-S4（D-19）：finish 检查前先查取消（适配器取消路径静默收口无 finishReason——
-  // 必须先于此处的契约兜底，否则取消被误判为适配器违规）
-  if (opts.signal?.aborted) throw new TurnAborted()
+  // 必须先于此处的契约兜底，否则取消被误判为适配器违规）；
+  // 1.23-W1（D-W1-6）：abortedAt 甄别——有 chunk = 在途打断（in-flight）；
+  // 零 chunk = attempt 前静默收口，请求未发出（before-request）
+  if (opts.signal?.aborted) throw new TurnAborted(sawChunk ? 'in-flight' : 'before-request')
   if (stopReason === undefined) {
     // 适配器层已保证首 finishReason（AL-05）；防御性兜底显式化
     throw new Error('CAR-E-LLM-FINISH: 流结束无 finishReason（适配器契约违规）')
@@ -256,16 +269,26 @@ export async function chatStep(opts: ChatStepOptions): Promise<ChatStepResult> {
       if (!c.name) continue
       let args: Record<string, unknown>
       try { args = c.argsBuf ? JSON.parse(c.argsBuf) as Record<string, unknown> : {} } catch {
-        // toolUse 声明下 args 非法 JSON = 协议违规显式化（非 length 场景无 truncatedTools 口径）
-        throw new Error(`CAR-E-LLM-PROTO: 工具调用 ${c.name} 参数非法 JSON（finishReason=${stopReason}，${errorDetail ?? '无附加错误'}）`)
+        // toolUse 声明下 args 非法 JSON = 协议违规显式化（非 length 场景无 truncatedTools 口径）；
+        // 1.23-W1（D-W1-3）：转 CarM8Error——turnEnd meta 获得 code/userHint/retryable + kind
+        // 'proto-invalid-args'（detail 形态变更登记：CarM8Error 统一格式带（B080001）码后缀）
+        throw new CarM8Error(
+          'B080001',
+          'CAR-E-LLM-PROTO',
+          `工具调用 ${c.name} 参数非法 JSON（finishReason=${stopReason}，${errorDetail ?? '无附加错误'}）`,
+          undefined,
+          false,
+          'proto-invalid-args',
+        )
       }
       toolCalls.push({ id: c.id ?? `tc-${idx}-${c.name}`, tool: c.name, args })
     }
     return { stopReason: 'toolUse', ...(text ? { text } : {}), ...(toolCalls.length ? { toolCalls } : {}), secretsRedacted }
   }
-  // error（含 aborted 映射）：以 B080001 抛出 → runTurn catch → turnEnd error 携带 detail（BD-04 收口）
+  // error（含 aborted 映射）：以 B080001 抛出 → runTurn catch → turnEnd error 携带 detail（BD-04 收口）；
+  // 1.23-W1（D-W1-2）：细类 kind 透传（error chunk 捕获的 errorKind；缺失 = 1.22 形态）
   if (stopReason === 'error') {
-    throw providerUnreachable(errorDetail ?? 'provider 返回 error 终止（无附加说明）')
+    throw providerUnreachable(errorDetail ?? 'provider 返回 error 终止（无附加说明）', errorKind)
   }
   return { stopReason: 'stop', ...(text ? { text } : {}), secretsRedacted }
 }

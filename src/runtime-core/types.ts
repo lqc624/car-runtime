@@ -41,6 +41,23 @@ export interface ToolCallDelta {
 }
 
 /**
+ * 1.23-W1（D-W1-1 / 《W-0 失败分类学对照审计》§5）：LLM 失败细类注册表——把 B080001 下压着的
+ * 多形态失败拆到可对应处置动作的粒度（审计 F-W0-2）。**加法演进**：可选键，缺失 = 1.22 形态
+ * 逐字节兼容。`transport-network` 从审计 8 类剔除（无独立产出点——网络失败只以 exhausted /
+ * midbreak 到达消费面）；`unmapped-finish` / `provider-stream-error` 为实施中浮出的两形态增补。
+ */
+export type LlmErrorKind =
+  | 'transport-4xx'
+  | 'transport-exhausted'
+  | 'stream-midbreak'
+  | 'no-finish-reason'
+  | 'refusal'
+  | 'proto-invalid-args'
+  | 'context-limit-suspect'
+  | 'unmapped-finish'
+  | 'provider-stream-error'
+
+/**
  * 1.11-S1（D-33 / 计量设计 §3.1）：token 四分量归一化用量——跨 provider 可加总的库内口径
  * （§1.1：openai prompt_tokens 含 cached 必须减法归一；anthropic input_tokens 天然不含 cache）。
  * provider 原始 usage 整体存 providerRaw 供审计对拍（对拍恒以 provider_raw 为准）。
@@ -72,8 +89,9 @@ export interface LlmChunk {
   toolCallDelta?: ToolCallDelta
   finishReason?: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted'
   // —— 规格外加法扩展（登记：M8 收口文档 §4 / 计量设计 §3.1，1.11.0）——
-  /** finishReason='error' 时的结构化原因（消费方落 turnEnd meta，不进模型消息流） */
-  error?: { code: string; message: string }
+  /** finishReason='error' 时的结构化原因（消费方落 turnEnd meta，不进模型消息流）；
+   *  1.23-W1（D-W1-2）：+kind 失败细类（LlmErrorKind 注册表——B080001 一码多形态的分型标注） */
+  error?: { code: string; message: string; kind?: LlmErrorKind }
   /** 1.11-S1（D-33）：每次请求最后一个 chunk 附带归一化用量；缺失 = provider 未回，禁补造 */
   usage?: LlmUsage
   // —— 1.21（R-TOKENHUB-1 / D-T1）thinking 捕获加法——anthropic SSE thinking 面捕获；
