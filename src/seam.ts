@@ -49,6 +49,13 @@
  *   索引对拍内部件（loadIndexState 私有）、#rewriteIndex（CRUD 内部）、
  *   legacy loadMemoryForInjection 保持 1.15.0 登记原样（行为逐字节不变，桌面切换召回形态后不再调用）。
  *   桌面消费面（召回接线 + MemoryView 编辑面）= Z-7/Z-11 独立小批（D-Z5-7），非本批。
+ * 加法登记：1.26.0 —— 会话内分叉面（Z-1 / Q-Z2 / D-Z13-1~2，《v0.13-Z1会话内分叉-迭代规划.md》）：
+ *   forkInSession 出面（同宿主消息边界分支——子链 [0,upToSeq) 逐字节迁移〔哈希链与 sessionId 解耦纪律〕
+ *   + 双向留痕：子链 fork-in payload.type='branch' / 源链 fork-out type='branch-out'〔append-only 零改写〕，
+ *   断链拒绝 fail-visible；排除语义 = 回到所选问题之前重新问）；+ 3 类型（ForkBranchMarkerPayload/
+ *   ForkBranchOutMarkerPayload/InSessionFork）。负面清单（不出面）：跨宿主 forkCrossHost/loadForkedLog
+ *   （T-1④ 迁移面——宿主自行经 JSONL 工件消费，不在本面）、标记 payload.type 判别的消费方（渲染/审计页
+ *   零内核面）。EventKind 零新增（'fork' 已在册）。
  */
 export { SessionLog, loadSessionLog, deriveSessionId, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
 export { SessionFileStore } from './session/store.ts'
@@ -84,6 +91,8 @@ export { assembleModelPool, probePoolMember, type PoolMember, type PoolMemberHea
 export { MemoryStore, loadMemoryForInjection, type MemoryEntry, type MemoryOp, type MemoryEventPayload, type MemoryInjectionResult } from './memory/store.ts'
 // —— 1.25.0（Z-5 / Q-Z1 / D-Z5-1~9）：记忆召回层（索引常驻 + 确定性召回；D-46 红线修订首次兑现）——
 export { buildMemoryIndex, recallMemories, type MemoryType, type MemoryIndexResult, type MemoryRecallResult } from './memory/store.ts'
+// —— 1.26.0（Z-1 / Q-Z2 / D-Z13-1~2）：会话内分叉面（同宿主消息边界分支——双向留痕；跨宿主迁移面不出面）——
+export { forkInSession, type ForkBranchMarkerPayload, type ForkBranchOutMarkerPayload, type InSessionFork } from './session/fork.ts'
 export { pendingSteerTurns, type PendingSteerTurn } from './session/steer.ts'
 // —— 1.15.1（K-STEER-1 桌面消费面缺口）：恢复层出面（resume 补记 interrupted = R-8 语义）——
 export { recoverInterrupted, type RecoveryReport } from './loop/recover.ts'
