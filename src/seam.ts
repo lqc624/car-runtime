@@ -39,6 +39,16 @@
  *   出面（未闭合 turn 补记 turnEnd=interrupted + 未配对 toolCall 合成 toolResult——桌面 resume 接入
  *   R-8 语义：消费前崩溃 → 执行中与引导 turn 均补记 interrupted，渲染层待执行徽标据此消隐；桌面禁
  *   私补内核 = 本出面为唯一合法通道）。
+ * 加法登记：1.25.0 —— 记忆召回层（Z-5 / Q-Z1 裁决 / D-Z5-1~9，《内核1.25-记忆召回层-迭代规划.md》）：
+ *   buildMemoryIndex 出面（索引常驻——index.md 派生投影 + CRUD 同步重写 + 读时 updatedAt 对拍修复
+ *   三重兜底，driftRepaired 可见禁静默；索引超预算 fail-visible）+ recallMemories 出面（每 turn
+ *   确定性召回——tags ∪ keywords ≥2 字符子串匹配禁 LLM，matchedKeys 字面 = 「有据可查的选择性
+ *   注入」落链数据源〔D-46 2026-11-21 修订生效〕；零命中零注入零落链；召回后仍超才拒）+
+ *   3 类型（MemoryType/MemoryIndexResult/MemoryRecallResult）。
+ *   负面清单（不出面）：MEMORY_TYPES 四型注册表（store 包内公开——桌面消费批需要时另行加法）、
+ *   索引对拍内部件（loadIndexState 私有）、#rewriteIndex（CRUD 内部）、
+ *   legacy loadMemoryForInjection 保持 1.15.0 登记原样（行为逐字节不变，桌面切换召回形态后不再调用）。
+ *   桌面消费面（召回接线 + MemoryView 编辑面）= Z-7/Z-11 独立小批（D-Z5-7），非本批。
  */
 export { SessionLog, loadSessionLog, deriveSessionId, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
 export { SessionFileStore } from './session/store.ts'
@@ -72,6 +82,8 @@ export { shouldCompact, applyCompaction, type CompactionConfig } from './session
 export { assembleModelPool, probePoolMember, type PoolMember, type PoolMemberHealth, type RoutingDecision, type RoutingAttempt } from './load/pool.ts'
 // —— 1.15.0（K-MEM-1 / D-46）：白盒记忆面 +（K-STEER-1 / D-47）：引导消息排队扫描 ——
 export { MemoryStore, loadMemoryForInjection, type MemoryEntry, type MemoryOp, type MemoryEventPayload, type MemoryInjectionResult } from './memory/store.ts'
+// —— 1.25.0（Z-5 / Q-Z1 / D-Z5-1~9）：记忆召回层（索引常驻 + 确定性召回；D-46 红线修订首次兑现）——
+export { buildMemoryIndex, recallMemories, type MemoryType, type MemoryIndexResult, type MemoryRecallResult } from './memory/store.ts'
 export { pendingSteerTurns, type PendingSteerTurn } from './session/steer.ts'
 // —— 1.15.1（K-STEER-1 桌面消费面缺口）：恢复层出面（resume 补记 interrupted = R-8 语义）——
 export { recoverInterrupted, type RecoveryReport } from './loop/recover.ts'
