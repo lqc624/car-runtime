@@ -8,13 +8,15 @@
  *  - 预算定位 = **资源护栏而非安全边界**（containment 非安全边界，对外声明口径归安全设计）。
  */
 
-export interface PtcBudget { computeMs: number; maxWallMs: number; maxOutputBytes: number }
+export interface PtcBudget { computeMs: number; maxWallMs: number; maxOutputBytes: number
+  /** 1.27.0（D-QD1-3）：REPL 打印流字节预算（OutputLedger——inspect-only 契约面；fresh run_code 不适用） */ maxPrintedBytes: number }
 
-/** 初始基线（dsh 一手口径对齐值；标定后经 ADR 修订） */
+/** 初始基线（dsh 一手口径对齐值；标定后经 ADR 修订；1.27.0 +maxPrintedBytes=64KB——打印面非结果面） */
 export const PTC_BUDGET_BASELINE: Readonly<PtcBudget> = Object.freeze({
   computeMs: 60_000,
   maxWallMs: 600_000,
   maxOutputBytes: 64 * 1024 * 1024,
+  maxPrintedBytes: 64 * 1024,
 })
 
 /**
@@ -24,7 +26,7 @@ export const PTC_BUDGET_BASELINE: Readonly<PtcBudget> = Object.freeze({
 export function convergeBudget(override?: Partial<PtcBudget>): PtcBudget {
   const out: PtcBudget = { ...PTC_BUDGET_BASELINE }
   if (!override) return out
-  for (const key of ['computeMs', 'maxWallMs', 'maxOutputBytes'] as const) {
+  for (const key of ['computeMs', 'maxWallMs', 'maxOutputBytes', 'maxPrintedBytes'] as const) {
     const v = override[key]
     if (v === undefined) continue
     if (!Number.isFinite(v) || v <= 0) throw new Error(`CAR-E-BUDGET: ${key} must be a positive number, got ${v}`)

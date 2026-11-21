@@ -8,17 +8,18 @@ import { SessionLog } from '../src/session/log.ts'
 
 // ==================== 预算收敛（只许下调） ====================
 
-test('PTC 预算: 基线对齐 dsh 一手口径（60s/600s/64MB）', () => {
-  assert.deepEqual(PTC_BUDGET_BASELINE, { computeMs: 60_000, maxWallMs: 600_000, maxOutputBytes: 64 * 1024 * 1024 })
+test('PTC 预算: 基线对齐 dsh 一手口径（60s/600s/64MB；1.27.0 +maxPrintedBytes 64KB——REPL 打印面）', () => {
+  assert.deepEqual(PTC_BUDGET_BASELINE, { computeMs: 60_000, maxWallMs: 600_000, maxOutputBytes: 64 * 1024 * 1024, maxPrintedBytes: 64 * 1024 })
   const b = convergeBudget()
-  assert.deepEqual(b, { computeMs: 60_000, maxWallMs: 600_000, maxOutputBytes: 64 * 1024 * 1024 })
+  assert.deepEqual(b, { computeMs: 60_000, maxWallMs: 600_000, maxOutputBytes: 64 * 1024 * 1024, maxPrintedBytes: 64 * 1024 })
 })
 
 test('PTC 预算: 下调通过；上调 = CAR-E-BUDGET 显式报错（fail-closed）', () => {
   const b = convergeBudget({ computeMs: 30_000, maxWallMs: 1000, maxOutputBytes: 1024 })
-  assert.deepEqual(b, { computeMs: 30_000, maxWallMs: 1000, maxOutputBytes: 1024 })
+  assert.deepEqual(b, { computeMs: 30_000, maxWallMs: 1000, maxOutputBytes: 1024, maxPrintedBytes: 64 * 1024 })
   assert.throws(() => convergeBudget({ maxWallMs: 700_000 }), /只许下调/)
   assert.throws(() => convergeBudget({ maxOutputBytes: 65 * 1024 * 1024 }), /CAR-E-BUDGET/)
+  assert.throws(() => convergeBudget({ maxPrintedBytes: 65 * 1024 }), /CAR-E-BUDGET/)
   assert.throws(() => convergeBudget({ computeMs: -1 }), /positive/)
 })
 

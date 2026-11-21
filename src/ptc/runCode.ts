@@ -15,6 +15,13 @@
  * facade 时刻覆盖）；**单 exporter 纪律：worker 零独立出站通道、零 trace 载荷注入**（worker 无
  * outbound 面——挂链由主线程句柄归因 + 计时 relay 完成）。主侧 killer / worker error 兜底路径
  * 无 done 回传（terminate/崩溃抢先），以主线程时钟收口（口径登记：兜底非 worker 计时）。
+ *
+ * 1.27.0（Q-D1 第二步 / D-QD1-6）：PtcFailureKind 失败细类（**工具面注册表分立**——与 1.23
+ * LlmErrorKind（LLM 面 9 类）两域分立，防一码压多形态 F-W0-2 教训）：PtcResult +kind 可选键
+ * （失败六产出点逐点标注——authorization-denied / concurrency-guard / budget-exceeded /
+ * worker-error〔done error 非预算 = 程序异常经 worker 收口 + worker 线程 error 两源同注 detail 区分〕/
+ * worker-exit〔exit 先于 done〕/ output-limit〔REPL 打印面截断标注——ok=true 时 kind 作标注面〕）；
+ * 无 kind = 既有形态字节兼容（PtcResult 可选键）。
  */
 import { Worker } from 'node:worker_threads'
 import { fileURLToPath } from 'node:url'
@@ -25,7 +32,13 @@ import { redactSecrets } from '../security/secrets.ts'
 
 export interface PtcRequest { code: string; description: string; toolCallId: string; budget?: Partial<PtcBudget> }
 export interface PtcResult { ok: boolean; result?: unknown; error?: string; wallMs: number; outputBytes: number; budgetExceeded?: boolean
-  /** F12 出站覆盖命中数（secrets 脱敏在回填上下文前强制执行） */ secretsRedacted?: number }
+  /** F12 出站覆盖命中数（secrets 脱敏在回填上下文前强制执行） */ secretsRedacted?: number
+  /** 1.27.0（D-QD1-6）：失败细类（六产出点；ok=true + output-limit = 截断标注面；无细类缺键字节兼容） */ kind?: PtcFailureKind }
+
+/** 工具面失败细类注册表（分立两域 D-QD1-6——与 LlmErrorKind 各自注册；可裁剪 = 单一常量旋钮） */
+export const PTC_FAILURE_KINDS = ['authorization-denied', 'concurrency-guard', 'budget-exceeded', 'worker-error', 'worker-exit', 'output-limit'] as const
+
+export type PtcFailureKind = (typeof PTC_FAILURE_KINDS)[number]
 
 export interface ToolBridge { run(args: unknown): Promise<unknown> }
 
@@ -55,17 +68,17 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
   // 授权门前置（无 worker 启动）：拒绝 = 工具错误结果 + 审计留痕（authorizationId='ptc-'+id 幂等键）
   if (opts.authorize) {
     const granted = await opts.authorize(req)
-    if (!granted) {
-      opts.audit?.({ kind: 'ptc-denied', toolCallId: req.toolCallId, authorizationId: 'ptc-' + req.toolCallId, description: req.description })
-      return { ok: false, error: 'authorization-denied (ptc)——授权拒绝落审计，程序未执行', wallMs: 0, outputBytes: 0 }
-    }
+      if (!granted) {
+        opts.audit?.({ kind: 'ptc-denied', toolCallId: req.toolCallId, authorizationId: 'ptc-' + req.toolCallId, description: req.description })
+        return { ok: false, error: 'authorization-denied (ptc)——授权拒绝落审计，程序未执行', wallMs: 0, outputBytes: 0, kind: 'authorization-denied' }
+      }
   }
   // erasable-only 挂点（入口）
   const era = checkErasableOnly(req.code)
   if (!era.ok) throw new Error(`CAR-E-PTC: ${era.violation}`)
   const budget = convergeBudget(req.budget)
   if (active >= MAX_CONCURRENT) {
-    return { ok: false, error: 'CAR-E-PTC: concurrency guard (max=4)——超限拒绝留痕', wallMs: 0, outputBytes: 0 }
+    return { ok: false, error: 'CAR-E-PTC: concurrency guard (max=4)——超限拒绝留痕', wallMs: 0, outputBytes: 0, kind: 'concurrency-guard' }
   }
   const started = Date.now()
   active++
@@ -74,6 +87,13 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
   opts.audit?.({ kind: 'ptc-start', description: req.description, toolCallId: req.toolCallId, budget })
   try {
     return await new Promise<PtcResult>((resolve) => {
+      // 1.27.0（D-QD1-6）：收口标志——exit 先于 done 的 worker-exit 兜底只发一次
+      let settled = false
+      const settle = (r: PtcResult): void => {
+        if (settled) return
+        settled = true
+        resolve(r)
+      }
       const worker = new Worker(WORKER_PATH, {
         workerData: { code: req.code, budget },
         resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32 },
@@ -83,7 +103,7 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
         void worker.terminate()
         // 1.8-D31：兜底收口（主线程时钟——terminate 抢先无 done relay，口径登记）
         relay?.complete(started, Date.now(), 'error', new Error(`budget-exceeded (maxWallMs=${budget.maxWallMs}, main-side guard)`))
-        resolve({ ok: false, error: `budget-exceeded (maxWallMs=${budget.maxWallMs}, main-side guard)`, wallMs: Date.now() - started, outputBytes: 0, budgetExceeded: true })
+        settle({ ok: false, error: `budget-exceeded (maxWallMs=${budget.maxWallMs}, main-side guard)`, wallMs: Date.now() - started, outputBytes: 0, budgetExceeded: true, kind: 'budget-exceeded' })
       }, budget.maxWallMs + 1000)
       worker.on('message', (m: { type: string; callId?: string; name?: string; args?: unknown; result?: unknown; error?: string; span?: { startMs: number; endMs: number } }) => {
         if (m.type === 'tool') {
@@ -114,7 +134,7 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
               opts.audit?.({ kind: 'ptc-secrets-redacted', toolCallId: req.toolCallId, hits: r.redacted })
             }
           }
-          resolve({
+          settle({
             ok: !m.error,
             result,
             error: m.error,
@@ -122,12 +142,23 @@ export async function runCode(req: PtcRequest, opts: RunCodeOpts): Promise<PtcRe
             outputBytes: Buffer.byteLength(JSON.stringify(result ?? null)),
             budgetExceeded: !!m.error?.startsWith('budget-exceeded'),
             secretsRedacted,
+            // 1.27.0（D-QD1-6）：done error = 程序异常经 worker 收口（worker-error 细类；done error 非预算 =
+            // 程序 throw 与 worker 线程 error 两源同注——detail 区分，注册表六类不含独立 exception 产点）
+            ...(m.error ? { kind: m.error.startsWith('budget-exceeded') ? ('budget-exceeded' as const) : ('worker-error' as const) } : {}),
           })
         }
       })
-      worker.on('error', (e) => { clearTimeout(killer); relay?.complete(started, Date.now(), 'error', e); resolve({ ok: false, error: String(e), wallMs: Date.now() - started, outputBytes: 0 }) })
-      worker.on('exit', (code) => { clearTimeout(killer); active-- })
-      // exit 可能先于 done（budget killer）——兜底 resolve 幂等由 Promise 语义保证
+      worker.on('error', (e) => { clearTimeout(killer); relay?.complete(started, Date.now(), 'error', e); settle({ ok: false, error: String(e), wallMs: Date.now() - started, outputBytes: 0, kind: 'worker-error' }) })
+      worker.on('exit', (code) => {
+        clearTimeout(killer)
+        active--
+        // 1.27.0（D-QD1-6）：exit 先于 done 且 killer/worker-error 未抢先 = worker-exit 细类
+        // （程序内 process.exit 形态——done/killer 均未收口时兜底；settled 已收则幂等 no-op）
+        if (!settled) {
+          settle({ ok: false, error: `worker-exited (code=${code})——worker 先于 done 退出（程序内 process.exit 形态）`, wallMs: Date.now() - started, outputBytes: 0, kind: 'worker-exit' })
+        }
+      })
+      // exit 可能先于 done（budget killer）——兜底 resolve 幂等由 settled 标志保证（1.27.0 前为 Promise 语义幂等）
     })
   } finally {
     // active 递归在 exit 事件处理；此处为异常路径兜底

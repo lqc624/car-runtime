@@ -56,6 +56,15 @@
  *   ForkBranchOutMarkerPayload/InSessionFork）。负面清单（不出面）：跨宿主 forkCrossHost/loadForkedLog
  *   （T-1④ 迁移面——宿主自行经 JSONL 工件消费，不在本面）、标记 payload.type 判别的消费方（渲染/审计页
  *   零内核面）。EventKind 零新增（'fork' 已在册）。
+ * 加法登记：1.27.0 —— Q-D1 第二步落码批（《内核1.27-Q-D1第二步-PTC子链与REPL-迭代规划.md》D-QD1-1~8，
+ *   C 全量立项用户批）：createPtcRepl/bindReplToTool 出面（子代理专属 scoped REPL——acorn 绑定复制
+ *   〔D-22 例外裁决随批：MIT/零传递依赖/parse-only〕+ inspect-only 输出契约〔OutputLedger 字节预算，
+ *   仅 REPL——fresh run_code 零变化〕+ 生命周期 release/assertIdle + 崩溃/强杀状态丢失如实报告
+ *   D-QD1-8；run_code 同名绑定纪律 D-QD1-7——ptc 型子链唯一 run_code = REPL 实例）+ PTC_FAILURE_KINDS
+ *   失败细类注册表出面（D-QD1-6 工具面分立——与 LlmErrorKind 两域各自注册，F-W0-2 教训）+ 4 类型
+ *   （PtcReplHandle/PtcReplResult/PtcReplOpts/PtcFailureKind）。负面清单（不出面）：REPL worker 内部件
+ *   （绑定扫描器/OutputLedger 类本体/worker-entry REPL 协议层）、acorn 传递面、E-4/E-5 登记维持。
+ *   EventKind 零新增。
  */
 export { SessionLog, loadSessionLog, deriveSessionId, type SessionEvent, type EventKind, type Actor } from './session/log.ts'
 export { SessionFileStore } from './session/store.ts'
@@ -93,6 +102,9 @@ export { MemoryStore, loadMemoryForInjection, type MemoryEntry, type MemoryOp, t
 export { buildMemoryIndex, recallMemories, type MemoryType, type MemoryIndexResult, type MemoryRecallResult } from './memory/store.ts'
 // —— 1.26.0（Z-1 / Q-Z2 / D-Z13-1~2）：会话内分叉面（同宿主消息边界分支——双向留痕；跨宿主迁移面不出面）——
 export { forkInSession, type ForkBranchMarkerPayload, type ForkBranchOutMarkerPayload, type InSessionFork } from './session/fork.ts'
+// —— 1.27.0（Q-D1 第二步 / D-QD1-1~8）：PTC 子链与 REPL（acorn 绑定复制 D-22 例外；inspect-only 仅 REPL）——
+export { createPtcRepl, bindReplToTool, type PtcReplHandle, type PtcReplResult, type PtcReplOpts } from './ptc/repl.ts'
+export { PTC_FAILURE_KINDS, type PtcFailureKind } from './ptc/runCode.ts'
 export { pendingSteerTurns, type PendingSteerTurn } from './session/steer.ts'
 // —— 1.15.1（K-STEER-1 桌面消费面缺口）：恢复层出面（resume 补记 interrupted = R-8 语义）——
 export { recoverInterrupted, type RecoveryReport } from './loop/recover.ts'
